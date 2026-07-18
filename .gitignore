@@ -4,3 +4,26 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Turborepo
+.turbo/
+
+# Build output
+dist/
+build/
+
+# Expo (Capture)
+apps/capture/.expo/
+apps/capture/expo-env.d.ts
+web-build/
+
+# Rust / Cargo (Bridge)
+apps/bridge/target/
+apps/bridge/src-tauri/gen/schemas/
+
+# Editor / OS
+.DS_Store

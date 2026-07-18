@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Motif Capture",
+    "slug": "motif-capture",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.motif.capture"
+    },
+    "android": {
+      "package": "com.motif.capture",
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

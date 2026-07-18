@@ -57,21 +57,53 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in the local bd (beads) database, not an external tracker. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix), applied as bd labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (root `CONTEXT.md` + `docs/adr/`). See `docs/agents/domain.md`.
 
 ## Build & Test
 
-_Add your build and test commands here_
+pnpm workspaces + Turborepo. See `README.md` for full details.
 
 ```bash
-# Example:
-# npm install
-# npm test
+pnpm install                               # install all workspaces
+pnpm build                                 # turbo: shared → app frontends
+pnpm typecheck                             # tsc --noEmit across all packages
+pnpm test                                  # JS/TS tests (Vitest in @motif/shared)
+cd apps/bridge && cargo test --workspace   # Rust tests (bridge-core)
+cd apps/bridge && cargo check --workspace  # compile Tauri shell + core
 ```
+
+Per-app dev/launch commands (`expo start`, `tauri dev`, etc.) are in `README.md`.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Two apps plus a shared package (ADR 0003):
+
+- `apps/capture` — Expo/React Native/TypeScript mobile app (Capture).
+- `apps/bridge` — Tauri desktop app (Bridge): TypeScript/Vite frontend in `src/`,
+  Rust domain logic in `core/` (`bridge-core`), thin Tauri adapter in `src-tauri/`.
+- `packages/shared` (`@motif/shared`) — Idea metadata schema + sync protocol
+  types, consumed by both apps' frontends; Bridge's Rust core mirrors them.
+
+Domain vocabulary is in `CONTEXT.md`; decisions in `docs/adr/`.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **Test seams**: domain logic lives in framework-agnostic cores testable without
+  a device/window — plain-TypeScript modules (Vitest) and `bridge-core` (`cargo
+  test`). UI/runtime shells stay thin. Follow this pattern rather than adding new
+  seams.
+- Tests assert external behavior, not internal call shape.
+- The shared package must be built (`pnpm build`) before consumers typecheck;
+  Turbo handles this via `^build` dependencies.

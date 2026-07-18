@@ -125,3 +125,54 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in the local bd (beads) database, not an external tracker. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix), applied as bd labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (root `CONTEXT.md` + `docs/adr/`). See `docs/agents/domain.md`.
+
+## Build & Test
+
+pnpm workspaces + Turborepo. See `README.md` for full details.
+
+```bash
+pnpm install                               # install all workspaces
+pnpm build                                 # turbo: shared → app frontends
+pnpm typecheck                             # tsc --noEmit across all packages
+pnpm test                                  # JS/TS tests (Vitest in @motif/shared)
+cd apps/bridge && cargo test --workspace   # Rust tests (bridge-core)
+cd apps/bridge && cargo check --workspace  # compile Tauri shell + core
+```
+
+Per-app dev/launch commands (`expo start`, `tauri dev`, etc.) are in `README.md`.
+
+## Architecture Overview
+
+Two apps plus a shared package (ADR 0003):
+
+- `apps/capture` — Expo/React Native/TypeScript mobile app (Capture).
+- `apps/bridge` — Tauri desktop app (Bridge): TypeScript/Vite frontend in `src/`,
+  Rust domain logic in `core/` (`bridge-core`), thin Tauri adapter in `src-tauri/`.
+- `packages/shared` (`@motif/shared`) — Idea metadata schema + sync protocol
+  types, consumed by both apps' frontends; Bridge's Rust core mirrors them.
+
+Domain vocabulary is in `CONTEXT.md`; decisions in `docs/adr/`.
+
+## Conventions & Patterns
+
+- **Test seams**: domain logic lives in framework-agnostic cores testable without
+  a device/window — plain-TypeScript modules (Vitest) and `bridge-core` (`cargo
+  test`). UI/runtime shells stay thin. Follow this pattern rather than adding new
+  seams.
+- Tests assert external behavior, not internal call shape.
+- The shared package must be built (`pnpm build`) before consumers typecheck;
+  Turbo handles this via `^build` dependencies.

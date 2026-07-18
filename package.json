@@ -1,0 +1,21 @@
+{
+  "name": "motif",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Motif — quick-capture for musical ideas (Capture + Bridge)",
+  "packageManager": "pnpm@11.13.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.2"
+  }
+}
