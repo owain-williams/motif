@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "infra"
 
 # Dependencies whose install/build scripts are allowed to run.
 allowBuilds:

@@ -1,0 +1,7 @@
+# Serverless AWS backend, provisioned with CDK
+
+Motif's Basic/Pro backend runs on AWS as a fully serverless stack rather than a server/RDS deployment: Amazon Cognito for account creation and login, DynamoDB (on-demand, single-table) for account/Idea/tier/pairing metadata, S3 for Idea audio, and an API Gateway HTTP API fronting Lambda. There is deliberately no VPC, RDS instance, NAT gateway, or bastion host — the always-on cost traps of a conventional AWS backend — so an idle deployment costs effectively nothing. Infrastructure is defined as code with AWS CDK in TypeScript (the `infra/` workspace), keeping IaC in the monorepo's primary language and pinned to a single account/region for a solo MVP. Stripe is the intended future billing provider for the Basic/Pro tiers, but payment integration is out of scope for this slice and nothing for it is built here.
+
+## Consequences
+
+DynamoDB's access-pattern-first modelling replaces ad-hoc SQL: new query shapes may need new keys or a GSI rather than a free-form `WHERE`, a deliberate trade for zero idle cost and no database to operate. Cognito owns the identity model, so auth (JWT issuance, password reset, verification) follows its conventions rather than a hand-rolled scheme. The stack is pinned to account `775696080126` / `eu-west-2`; moving environments (CI, a second region) means revisiting `bin/motif-infra.ts`. Choosing managed serverless over self-hosted means AWS lock-in for identity and metadata — accepted for v1 in exchange for the operational and cost savings.
