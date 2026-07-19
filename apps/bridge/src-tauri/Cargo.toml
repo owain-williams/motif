@@ -20,5 +20,6 @@ tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 bridge-core = { path = "../core" }
+rand = "0.9"
 hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4"] }

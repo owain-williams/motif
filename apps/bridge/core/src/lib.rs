@@ -11,6 +11,7 @@
 //! byte-identical to what Capture sends.
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +28,13 @@ pub fn sync_protocol_version() -> u32 {
     SYNC_PROTOCOL_VERSION
 }
 
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 /// Whether a peer advertising `peer_version` speaks a protocol this build can
 /// sync with. Mirror of `isSyncProtocolCompatible` in `@motif/shared`.
 pub fn is_sync_protocol_compatible(peer_version: u32) -> bool {
@@ -36,6 +44,15 @@ pub fn is_sync_protocol_compatible(peer_version: u32) -> bool {
 /// Number of digits in the pairing code Bridge displays. Mirror of
 /// `PAIRING_CODE_LENGTH` in `@motif/shared`.
 pub const PAIRING_CODE_LENGTH: usize = 6;
+
+/// How long a displayed pairing code remains usable.
+pub const PAIRING_CODE_TTL_SECS: u64 = 10 * 60;
+
+/// Wrong codes allowed before pairing is temporarily locked.
+pub const PAIRING_MAX_FAILED_ATTEMPTS: u32 = 5;
+
+/// Cooldown after too many wrong pairing codes.
+pub const PAIRING_LOCKOUT_SECS: u64 = 60;
 
 /// Whether `code` is a well-formed pairing code (exactly [`PAIRING_CODE_LENGTH`]
 /// ASCII digits). Mirror of `isValidPairingCode` in `@motif/shared`.
@@ -282,6 +299,10 @@ impl SyncManifest {
 pub struct PairingState {
     identity: DeviceIdentity,
     pairing_code: String,
+    /// Unix timestamp in seconds. Missing on legacy files, which makes their
+    /// long-lived code immediately eligible for rotation by the shell.
+    #[serde(default)]
+    pairing_code_expires_at: u64,
     paired: Option<DeviceIdentity>,
 }
 
@@ -289,11 +310,13 @@ impl PairingState {
     pub fn new(
         identity: DeviceIdentity,
         pairing_code: String,
+        issued_at: u64,
         paired: Option<DeviceIdentity>,
     ) -> Self {
         Self {
             identity,
             pairing_code,
+            pairing_code_expires_at: issued_at.saturating_add(PAIRING_CODE_TTL_SECS),
             paired,
         }
     }
@@ -311,6 +334,15 @@ impl PairingState {
     }
 }
 
+/// Security state surfaced by the Tauri shell alongside the current code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingStatus {
+    pub code: String,
+    pub expires_at: u64,
+    pub locked_until: Option<u64>,
+}
+
 /// The receiver-side session: this Bridge's durable pairing and its received
 /// Library. Owns every pairing/accept decision so the transport shell stays
 /// thin.
@@ -318,11 +350,18 @@ impl PairingState {
 pub struct SyncState {
     pairing: PairingState,
     library: BridgeLibrary,
+    failed_pairing_attempts: u32,
+    locked_until: Option<u64>,
 }
 
 impl SyncState {
     pub fn new(pairing: PairingState, library: BridgeLibrary) -> Self {
-        Self { pairing, library }
+        Self {
+            pairing,
+            library,
+            failed_pairing_attempts: 0,
+            locked_until: None,
+        }
     }
 
     pub fn identity(&self) -> &DeviceIdentity {
@@ -356,15 +395,58 @@ impl SyncState {
             .is_some_and(|p| p.device_id == device_id)
     }
 
-    /// Decides and applies a pairing request. Accepts when the protocol is
-    /// compatible *and* the code matches the one Bridge is displaying; on
-    /// acceptance it remembers the Capture as its single paired peer (Free
-    /// tier), replacing any prior pairing.
+    /// Current code lifetime and lockout state for display by the shell.
+    pub fn pairing_status_at(&self, now: u64) -> PairingStatus {
+        PairingStatus {
+            code: self.pairing.pairing_code.clone(),
+            expires_at: self.pairing.pairing_code_expires_at,
+            locked_until: self.locked_until.filter(|until| *until > now),
+        }
+    }
+
+    /// Replaces an expired code and begins a fresh attempt window. Invalid
+    /// codes are refused so the shell cannot accidentally make pairing
+    /// impossible.
+    pub fn rotate_pairing_code(&mut self, code: String, now: u64) -> bool {
+        if !is_valid_pairing_code(&code) {
+            return false;
+        }
+        self.pairing.pairing_code = code;
+        self.pairing.pairing_code_expires_at = now.saturating_add(PAIRING_CODE_TTL_SECS);
+        self.failed_pairing_attempts = 0;
+        self.locked_until = None;
+        true
+    }
+
+    /// Decides and applies a pairing request using the system clock.
     pub fn handle_pairing(&mut self, req: &PairingRequest) -> PairingResponse {
-        let accepted = is_sync_protocol_compatible(req.protocol_version)
-            && req.pairing_code == self.pairing.pairing_code;
+        self.handle_pairing_at(req, unix_timestamp_secs())
+    }
+
+    /// Deterministic pairing seam. A code must be compatible, unexpired, and
+    /// correct. Repeated wrong codes trigger a global cooldown, preventing a
+    /// LAN peer from brute-forcing the six-digit trust boundary.
+    pub fn handle_pairing_at(&mut self, req: &PairingRequest, now: u64) -> PairingResponse {
+        if self.locked_until.is_some_and(|until| until <= now) {
+            self.locked_until = None;
+            self.failed_pairing_attempts = 0;
+        }
+
+        let compatible = is_sync_protocol_compatible(req.protocol_version);
+        let code_active = now < self.pairing.pairing_code_expires_at;
+        let locked = self.locked_until.is_some_and(|until| until > now);
+        let code_matches = req.pairing_code == self.pairing.pairing_code;
+        let accepted = compatible && code_active && !locked && code_matches;
+
         if accepted {
+            self.failed_pairing_attempts = 0;
+            self.locked_until = None;
             self.pairing.paired = Some(req.from.clone());
+        } else if compatible && code_active && !locked && !code_matches {
+            self.failed_pairing_attempts = self.failed_pairing_attempts.saturating_add(1);
+            if self.failed_pairing_attempts >= PAIRING_MAX_FAILED_ATTEMPTS {
+                self.locked_until = Some(now.saturating_add(PAIRING_LOCKOUT_SECS));
+            }
         }
         PairingResponse::new(accepted, self.pairing.identity.clone())
     }

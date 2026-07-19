@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
@@ -95,8 +96,12 @@ fn syncs_an_idea_over_the_loopback_network() {
         display_name: "Studio Mac".into(),
         role: DeviceRole::Bridge,
     };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let state = Arc::new(Mutex::new(SyncState::new(
-        PairingState::new(identity, "424242".into(), None),
+        PairingState::new(identity, "424242".into(), now, None),
         BridgeLibrary::new(),
     )));
     let sink = Arc::new(RecordingSink::default());

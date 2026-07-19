@@ -11,6 +11,8 @@ import type { IdeaMetadata } from "@motif/shared";
 
 interface PairingInfo {
   readonly code: string;
+  readonly expiresAt: number;
+  readonly lockedUntil: number | null;
 }
 
 const REFRESH_MS = 3000;
@@ -26,7 +28,15 @@ async function loadPairingInfo(): Promise<void> {
   if (!el) return;
   try {
     const info = await invoke<PairingInfo>("pairing_info");
-    el.textContent = `Pair a phone · code ${info.code}`;
+    const now = Math.floor(Date.now() / 1000);
+    if (info.lockedUntil !== null && info.lockedUntil > now) {
+      el.textContent = `Pairing locked · try again in ${info.lockedUntil - now}s`;
+      return;
+    }
+    const remaining = Math.max(0, info.expiresAt - now);
+    const minutes = Math.floor(remaining / 60);
+    const seconds = String(remaining % 60).padStart(2, "0");
+    el.textContent = `Pair a phone · code ${info.code} · refreshes in ${minutes}:${seconds}`;
   } catch {
     el.textContent = "Sync receiver unavailable";
   }
@@ -204,4 +214,5 @@ window.addEventListener("DOMContentLoaded", () => {
   void loadPairingInfo();
   void refreshLibrary();
   setInterval(() => void refreshLibrary(), REFRESH_MS);
+  setInterval(() => void loadPairingInfo(), REFRESH_MS);
 });

@@ -14,9 +14,9 @@ use bridge_core::discovery::BridgeAdvertisement;
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
-    DeviceRole, HandoffPlan, IdeaMetadata, PairingState, SyncState, PAIRING_CODE_LENGTH,
+    DeviceRole, HandoffPlan, IdeaMetadata, PairingState, PairingStatus, SyncState,
+    PAIRING_CODE_LENGTH,
 };
-use serde::Serialize;
 use tauri::{Manager, State};
 
 use transcode::transcode_to_wav;
@@ -34,7 +34,7 @@ const CLOUD_API_URL: &str = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.
 struct BridgeState {
     sync: Arc<Mutex<SyncState>>,
     data_dir: PathBuf,
-    pairing_code: String,
+    pairing_path: PathBuf,
     cloud_token: Arc<Mutex<Option<String>>>,
     // Keeping the daemon alive keeps this Bridge advertised over Bonjour.
     _discovery: Option<BridgeAdvertisement>,
@@ -93,18 +93,19 @@ fn persist_pairing(path: &Path, pairing: &PairingState) -> std::io::Result<()> {
     fs::write(path, json)
 }
 
-/// Generates the initial pseudo-random pairing code, sized to
-/// [`PAIRING_CODE_LENGTH`] so it always passes `is_valid_pairing_code`. Free
-/// tier has no account, so this is the shared secret the user types into
-/// Capture to prove the two devices are theirs. It is persisted and reused on
-/// future launches.
+/// Generates a cryptographically random pairing code. Free tier has no
+/// account, so this short-lived code is the trust boundary the user confirms.
 fn generate_pairing_code() -> String {
     let modulus = 10u64.pow(PAIRING_CODE_LENGTH as u32);
-    let seed = SystemTime::now()
+    let value = rand::random_range(0..modulus);
+    format!("{:0width$}", value, width = PAIRING_CODE_LENGTH)
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    format!("{:0width$}", seed % modulus, width = PAIRING_CODE_LENGTH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn bridge_identity() -> DeviceIdentity {
@@ -117,12 +118,6 @@ fn bridge_identity() -> DeviceIdentity {
         display_name: "Motif Bridge".to_string(),
         role: DeviceRole::Bridge,
     }
-}
-
-/// Pairing proof displayed by Bridge after Capture discovers its endpoint.
-#[derive(Serialize)]
-struct PairingInfo {
-    code: String,
 }
 
 /// Returns the sync protocol version the Rust core speaks. Lets the frontend
@@ -138,12 +133,21 @@ fn library(state: State<'_, BridgeState>) -> Vec<IdeaMetadata> {
     state.sync.lock().unwrap().library().ideas().to_vec()
 }
 
-/// The pairing code to display for a phone to confirm.
+/// The active pairing code, expiry, and any brute-force cooldown. Reading an
+/// expired code rotates it before returning so the UI never displays a stale
+/// credential.
 #[tauri::command]
-fn pairing_info(state: State<'_, BridgeState>) -> PairingInfo {
-    PairingInfo {
-        code: state.pairing_code.clone(),
+fn pairing_info(state: State<'_, BridgeState>) -> Result<PairingStatus, String> {
+    let now = unix_timestamp_secs();
+    let mut sync = state
+        .sync
+        .lock()
+        .map_err(|_| "Pairing unavailable".to_string())?;
+    if sync.pairing_status_at(now).expires_at <= now {
+        sync.rotate_pairing_code(generate_pairing_code(), now);
+        persist_pairing(&state.pairing_path, sync.pairing()).map_err(|error| error.to_string())?;
     }
+    Ok(sync.pairing_status_at(now))
 }
 
 /// Enables account-scoped relay polling. The token remains in memory only and
@@ -243,16 +247,17 @@ pub fn run() {
                 pairing_path: pairing_path.clone(),
             });
 
+            let now = unix_timestamp_secs();
             let pairing = load_pairing(&pairing_path).unwrap_or_else(|| {
-                PairingState::new(bridge_identity(), generate_pairing_code(), None)
+                PairingState::new(bridge_identity(), generate_pairing_code(), now, None)
             });
-            persist_pairing(&pairing_path, &pairing)?;
-            let pairing_code = pairing.pairing_code().to_string();
             let identity = pairing.identity().clone();
-            let sync = Arc::new(Mutex::new(SyncState::new(
-                pairing,
-                load_library(&manifest_path),
-            )));
+            let mut sync_state = SyncState::new(pairing, load_library(&manifest_path));
+            if sync_state.pairing_status_at(now).expires_at <= now {
+                sync_state.rotate_pairing_code(generate_pairing_code(), now);
+            }
+            persist_pairing(&pairing_path, sync_state.pairing())?;
+            let sync = Arc::new(Mutex::new(sync_state));
 
             // Bind the receiver on the LAN — fixed port for a stable pairing
             // address, falling back to an OS-assigned one if it's taken.
@@ -289,7 +294,7 @@ pub fn run() {
             app.manage(BridgeState {
                 sync,
                 data_dir,
-                pairing_code,
+                pairing_path,
                 cloud_token,
                 _discovery: discovery,
             });

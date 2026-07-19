@@ -56,6 +56,7 @@ fn state() -> Arc<Mutex<SyncState>> {
                 role: DeviceRole::Bridge,
             },
             "424242".into(),
+            0,
             None,
         ),
         BridgeLibrary::new(),
