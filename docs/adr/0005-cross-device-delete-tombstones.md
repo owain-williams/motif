@@ -1,0 +1,7 @@
+# Cross-device delete via per-device tombstones and trash
+
+Motif's sync protocol was built copy-only (ADR 0002): Ideas are never deleted as a side effect of syncing. Deleting an Idea now needs to remove it from every paired device, including ones offline at the time — but Free tier has no server to coordinate that (local-network-only, no cloud relay). We chose a decentralized tombstone model: each device keeps its own set of deleted Idea IDs and exchanges it during the existing pairing/sync handshake, applying pending deletes whenever two devices next connect, however long that takes. Deletion is soft (a 30-day per-device "Recently Deleted" retention) rather than immediate, so restore is possible via ordinary re-sync as long as at least one paired device still holds the audio within its own grace window — there's no guarantee of restore once every device has independently purged its copy, since there's no central authority to coordinate a shared clock.
+
+## Consequences
+
+This doesn't weaken ADR 0002's "sync never deletes as a side effect" guarantee — that still holds for ordinary sync. Deletion is always an explicit, first-class user action, propagated the same way an Idea's initial copy is, not an implicit consequence of syncing. Free-tier delete propagation inherits the same LAN-reachability constraint as the rest of Free-tier sync (ADR 0002's already-accepted trade-off), not a new limitation.
