@@ -13,8 +13,14 @@ serverless — no VPC, RDS, NAT, or bastion, so idle cost is ~$0.
 |---|---|
 | Cognito User Pool + app client | Account creation + login (email, `USER_PASSWORD_AUTH`) |
 | DynamoDB table `motif` | Account/Idea/tier/pairing metadata (single-table, on-demand) |
-| S3 `motif-idea-audio-<acct>-<region>` | Idea audio (empty; not yet wired to apps) |
-| API Gateway HTTP API + Lambda | `GET /health` (open), `GET /me` and `PUT /me/tier` (Cognito JWT authorizer) |
+| S3 `motif-idea-audio-<acct>-<region>` | Account-scoped cloud-relay Idea audio |
+| API Gateway HTTP API + Lambda | Health, account profile/tier, and authenticated cloud-relay routes |
+
+Relay routes require a Cognito ID token and reject Free accounts: `GET
+/relay/manifest`, `POST /relay/ideas`, `POST /relay/ideas/{id}/complete`, and
+`GET /relay/ideas/{id}`. The authenticated API exchanges metadata and short-lived
+account-scoped S3 URLs; audio transfers directly to S3 so Pro WAV Ideas are not
+constrained by API Gateway's 10MB request limit.
 
 Everything uses `RemovalPolicy.DESTROY` — fine for the MVP, revisit before this
 holds real user data.

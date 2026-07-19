@@ -44,6 +44,7 @@ import { planIdeaShare } from "./src/core/idea-share";
 import {
   isPaired,
   pairWithBridge,
+  syncTransports,
   UNPAIRED,
   unpair,
 } from "./src/core/sync-engine";
@@ -61,7 +62,11 @@ import {
   saveLibrary,
   stageIdeaForShare,
 } from "./src/idea-storage";
-import { requestPairing, syncPendingIdeas } from "./src/idea-sync";
+import {
+  requestPairing,
+  syncPendingCloudIdeas,
+  syncPendingIdeas,
+} from "./src/idea-sync";
 import {
   clearPairedBridge,
   loadSyncState,
@@ -113,9 +118,11 @@ const SYNC_INTERVAL_MS = 15_000;
 
 /** Everything a sync pass needs: the paired Bridge, who we are, what we have. */
 interface SyncInputs {
-  readonly bridge: PairedBridge;
+  readonly bridge: PairedBridge | null;
   readonly capture: DeviceIdentity;
   readonly library: IdeaMetadata[];
+  readonly tier: Tier;
+  readonly idToken: string | null;
 }
 
 export default function App() {
@@ -204,38 +211,66 @@ export default function App() {
     };
   }, []);
 
-  // Offers every Idea Bridge is missing; failures are soft (Bridge may be off).
-  const runSync = useCallback(async ({ bridge, capture, library: ideas }: SyncInputs) => {
-    try {
-      const synced = await syncPendingIdeas({
-        endpoint: bridge.endpoint,
-        capture,
-        library: ideas,
-        readAudio: (idea) =>
-          readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat)),
-      });
-      setSyncStatus(
-        synced.length > 0
-          ? `Synced ${synced.length} idea${synced.length === 1 ? "" : "s"} to ${bridge.displayName}`
-          : `Up to date with ${bridge.displayName}`,
-      );
-    } catch {
-      setSyncStatus(`Can't reach ${bridge.displayName}`);
+  // Runs every path the tier allows. LAN remains preferred and independent:
+  // a local failure never prevents a paid account from reaching cloud relay.
+  const runSync = useCallback(async (inputs: SyncInputs) => {
+    const transports = syncTransports(inputs.tier, inputs.bridge !== null);
+    const readAudio = (idea: IdeaMetadata) =>
+      readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
+    const statuses: string[] = [];
+
+    if (transports.includes("local-network") && inputs.bridge) {
+      try {
+        const synced = await syncPendingIdeas({
+          endpoint: inputs.bridge.endpoint,
+          capture: inputs.capture,
+          library: inputs.library,
+          readAudio,
+        });
+        statuses.push(
+          synced.length > 0
+            ? `${synced.length} to ${inputs.bridge.displayName}`
+            : `${inputs.bridge.displayName} up to date`,
+        );
+      } catch {
+        statuses.push(`${inputs.bridge.displayName} offline`);
+      }
     }
+
+    if (transports.includes("cloud-relay") && inputs.idToken) {
+      try {
+        const synced = await syncPendingCloudIdeas({
+          idToken: inputs.idToken,
+          capture: inputs.capture,
+          library: inputs.library,
+          readAudio,
+        });
+        statuses.push(synced.length > 0 ? `${synced.length} via cloud` : "Cloud up to date");
+      } catch {
+        statuses.push("Cloud unavailable");
+      }
+    }
+
+    setSyncStatus(statuses.join(" · ") || null);
   }, []);
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
   useEffect(() => {
-    syncInputsRef.current =
-      syncState.pairedBridge && captureIdentity
-        ? { bridge: syncState.pairedBridge, capture: captureIdentity, library }
-        : null;
-  }, [syncState.pairedBridge, captureIdentity, library]);
+    syncInputsRef.current = captureIdentity
+      ? {
+          bridge: syncState.pairedBridge,
+          capture: captureIdentity,
+          library,
+          tier,
+          idToken: authTokensRef.current?.idToken ?? null,
+        }
+      : null;
+  }, [syncState.pairedBridge, captureIdentity, library, tier, account]);
 
-  // While paired, sync now and on an interval so a new Idea reaches Bridge as
-  // soon as both are on the network — no manual "sync now" (motif-6fu.6).
+  // Sync now and on an interval whenever LAN or paid cloud relay is available.
   useEffect(() => {
-    if (!syncState.pairedBridge || !captureIdentity) return;
+    if (!captureIdentity) return;
+    if (syncTransports(tier, syncState.pairedBridge !== null).length === 0) return;
     const tick = () => {
       const inputs = syncInputsRef.current;
       if (inputs) void runSync(inputs);
@@ -243,7 +278,7 @@ export default function App() {
     tick();
     const timer = setInterval(tick, SYNC_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [syncState.pairedBridge, captureIdentity, runSync]);
+  }, [syncState.pairedBridge, captureIdentity, tier, account, runSync]);
 
   async function startRecording() {
     const { granted } = await requestRecordingPermissionsAsync();
@@ -301,8 +336,14 @@ export default function App() {
     setLibrary(next);
     // Nudge the new Idea to Bridge right away if paired (copy semantics — the
     // Capture-side Idea just saved stays put); the interval is the fallback.
-    if (syncState.pairedBridge && captureIdentity) {
-      void runSync({ bridge: syncState.pairedBridge, capture: captureIdentity, library: next });
+    if (captureIdentity) {
+      void runSync({
+        bridge: syncState.pairedBridge,
+        capture: captureIdentity,
+        library: next,
+        tier,
+        idToken: authTokensRef.current?.idToken ?? null,
+      });
     }
   }
 
@@ -419,7 +460,13 @@ export default function App() {
       };
       await savePairedBridge(bridge);
       setSyncState((current) => pairWithBridge(current, bridge));
-      void runSync({ bridge, capture: captureIdentity, library });
+      void runSync({
+        bridge,
+        capture: captureIdentity,
+        library,
+        tier,
+        idToken: authTokensRef.current?.idToken ?? null,
+      });
     } catch {
       Alert.alert(
         "Couldn't reach Bridge",

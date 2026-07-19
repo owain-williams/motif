@@ -18,6 +18,8 @@ import {
   CloudFormationClient,
   DescribeStacksCommand,
 } from '@aws-sdk/client-cloudformation';
+import { DeleteItemCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -57,8 +59,12 @@ async function main(): Promise<void> {
   console.log(`App client:  ${clientId}\n`);
 
   const idp = new CognitoIdentityProviderClient({ region: REGION });
+  const dynamo = new DynamoDBClient({ region: REGION });
+  const s3 = new S3Client({ region: REGION });
   const email = `smoke+${Date.now()}@motif.test`;
   const password = `Sm0ke!${Math.random().toString(36).slice(2, 10)}A`;
+  const ideaId = `smoke-${Date.now()}`;
+  let accountSub: string | undefined;
 
   // 2. reachable
   const health = await fetch(`${apiUrl}/health`);
@@ -104,6 +110,7 @@ async function main(): Promise<void> {
     console.log(`GET /me     -> ${me.status} ${JSON.stringify(body)}`);
     assert(me.status === 200, `/me expected 200, got ${me.status}`);
     assert(body.email === email, `/me returned wrong email: ${body.email}`);
+    accountSub = body.sub;
     assert(body.tier === 'free', `/me defaulted to wrong tier: ${body.tier}`);
 
     // 7. temporary tier assignment path, pending billing integration.
@@ -122,15 +129,79 @@ async function main(): Promise<void> {
     const updatedBody = (await updatedMe.json()) as { tier?: string };
     console.log(`PUT tier    -> ${tierUpdate.status}; GET /me -> ${updatedBody.tier}`);
     assert(updatedBody.tier === 'basic', `tier update was not persisted: ${updatedBody.tier}`);
+
+    // 8. relay an Idea through real API + presigned S3 URLs.
+    const audio = new TextEncoder().encode('smoke audio');
+    const offer = {
+      kind: 'idea-sync-offer',
+      from: { deviceId: 'smoke-capture', displayName: 'Smoke', role: 'capture' },
+      idea: {
+        id: ideaId,
+        name: 'Smoke Idea',
+        capturedAt: Date.now(),
+        durationMs: 1000,
+        audioFormat: 'aac',
+        channels: 1,
+        storageState: 'on-device',
+      },
+      audioByteLength: audio.length,
+    };
+    const initiate = await fetch(`${apiUrl}/relay/ideas`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${idToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(offer),
+    });
+    const initiated = (await initiate.json()) as { uploadUrl?: string };
+    assert(initiate.status === 200 && initiated.uploadUrl, 'relay initiation failed');
+    const upload = await fetch(initiated.uploadUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: audio,
+    });
+    assert(upload.ok, `S3 upload failed: ${upload.status}`);
+    const complete = await fetch(`${apiUrl}/relay/ideas/${ideaId}/complete`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${idToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(offer),
+    });
+    assert(complete.ok, `relay completion failed: ${complete.status}`);
+    const manifest = await fetch(`${apiUrl}/relay/manifest`, {
+      headers: { authorization: `Bearer ${idToken}` },
+    }).then((response) => response.json()) as { have?: string[] };
+    assert(manifest.have?.includes(ideaId), 'relay manifest omitted uploaded Idea');
+    const descriptor = await fetch(`${apiUrl}/relay/ideas/${ideaId}`, {
+      headers: { authorization: `Bearer ${idToken}` },
+    }).then((response) => response.json()) as { downloadUrl?: string };
+    assert(descriptor.downloadUrl, 'relay download URL missing');
+    const downloadedBuffer = await fetch(descriptor.downloadUrl).then((response) => response.arrayBuffer());
+    const downloaded = new Uint8Array(downloadedBuffer as ArrayBuffer);
+    assert(new TextDecoder().decode(downloaded) === 'smoke audio', 'relay audio did not round-trip');
+    console.log('Cloud relay -> upload + manifest + download ok');
   } finally {
-    // 8. cleanup
+    // 9. cleanup
+    if (accountSub) {
+      await Promise.all([
+        dynamo.send(new DeleteItemCommand({
+          TableName: out.TableName,
+          Key: { PK: { S: `ACCOUNT#${accountSub}` }, SK: { S: `IDEA#${ideaId}` } },
+        })),
+        dynamo.send(new DeleteItemCommand({
+          TableName: out.TableName,
+          Key: { PK: { S: `ACCOUNT#${accountSub}` }, SK: { S: 'PROFILE' } },
+        })),
+        s3.send(new DeleteObjectCommand({
+          Bucket: out.BucketName,
+          Key: `accounts/${accountSub}/ideas/${ideaId}`,
+        })),
+      ]).catch((error) => console.warn('Relay cleanup failed (non-fatal):', error?.message));
+    }
     await idp
       .send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: email }))
       .then(() => console.log('Cleanup     -> deleted test user'))
       .catch((e) => console.warn('Cleanup failed (non-fatal):', e?.message));
   }
 
-  console.log('\n✅ Auth smoke test passed: account created + logged in end-to-end.');
+  console.log('\n✅ Smoke test passed: account + cloud relay end-to-end.');
 }
 
 main().catch((err) => {

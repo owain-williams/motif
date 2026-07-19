@@ -9,6 +9,7 @@ import type {
 import { ideasToOffer } from "./core/sync-engine";
 import type { BridgeEndpoint } from "./core/sync-engine";
 import { frameOffer } from "./core/sync-wire";
+import { MOTIF_API_URL } from "./account-client";
 
 /**
  * Capture-side transport for Free-tier local-network sync (motif-6fu.6) — the
@@ -98,6 +99,74 @@ export async function syncPendingIdeas(plan: SyncPlan): Promise<string[]> {
     if (ack.accepted) {
       synced.push(ack.ideaId);
     }
+  }
+  return synced;
+}
+
+export interface CloudSyncPlan {
+  readonly idToken: string;
+  readonly capture: DeviceIdentity;
+  readonly library: readonly IdeaMetadata[];
+  readonly readAudio: (idea: IdeaMetadata) => Promise<Uint8Array>;
+}
+
+/**
+ * Copies pending Ideas into the authenticated relay. The backend independently
+ * enforces Basic/Pro, so a Free token cannot open this transport even if a
+ * caller is buggy. Capture keeps every local audio file after upload.
+ */
+export async function syncPendingCloudIdeas(plan: CloudSyncPlan): Promise<string[]> {
+  const headers = { Authorization: `Bearer ${plan.idToken}` };
+  const manifestResponse = await fetch(`${MOTIF_API_URL}/relay/manifest`, { headers });
+  if (!manifestResponse.ok) {
+    throw new Error(`Cloud manifest fetch failed (${manifestResponse.status})`);
+  }
+  const manifest = (await manifestResponse.json()) as { have?: string[] };
+  const pending = ideasToOffer(plan.library, manifest.have ?? []);
+  const synced: string[] = [];
+
+  for (const idea of pending) {
+    const audio = await plan.readAudio(idea);
+    const offer: IdeaSyncOffer = {
+      kind: "idea-sync-offer",
+      from: plan.capture,
+      idea,
+      audioByteLength: audio.length,
+    };
+    // API Gateway request bodies are capped at 10MB, while Pro WAV Ideas can
+    // be much larger. Ask the authenticated API for an account-scoped S3 URL,
+    // upload audio directly, then publish metadata only after S3 has verified
+    // the complete byte length.
+    const initiation = await fetch(`${MOTIF_API_URL}/relay/ideas`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(offer),
+    });
+    if (!initiation.ok) {
+      throw new Error(`Cloud Idea offer failed (${initiation.status})`);
+    }
+    const { uploadUrl } = (await initiation.json()) as { uploadUrl: string };
+    const uploadBytes = new Uint8Array(audio);
+    const upload = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: uploadBytes,
+    });
+    if (!upload.ok) throw new Error(`Cloud audio upload failed (${upload.status})`);
+
+    const completion = await fetch(
+      `${MOTIF_API_URL}/relay/ideas/${encodeURIComponent(idea.id)}/complete`,
+      {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(offer),
+      },
+    );
+    if (!completion.ok) {
+      throw new Error(`Cloud Idea completion failed (${completion.status})`);
+    }
+    const ack = (await completion.json()) as IdeaSyncAck;
+    if (ack.accepted) synced.push(ack.ideaId);
   }
   return synced;
 }

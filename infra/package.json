@@ -9,9 +9,13 @@
     "deploy": "cdk deploy --require-approval never",
     "destroy": "cdk destroy --force",
     "typecheck": "tsc --noEmit",
+    "test": "node --test lambda/*.test.js",
     "smoke": "ts-node scripts/smoke-auth.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.600.0",
     "aws-cdk-lib": "^2.155.0",
     "constructs": "^10.3.0"
   },

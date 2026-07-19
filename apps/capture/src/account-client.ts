@@ -4,7 +4,7 @@ const REGION = process.env.EXPO_PUBLIC_MOTIF_AWS_REGION ?? "eu-west-2";
 const CLIENT_ID =
   process.env.EXPO_PUBLIC_MOTIF_USER_POOL_CLIENT_ID ??
   "158crbvjn6ss89plph8p8ivo96";
-const API_URL =
+export const MOTIF_API_URL =
   process.env.EXPO_PUBLIC_MOTIF_API_URL ??
   "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
 const COGNITO_URL = `https://cognito-idp.${REGION}.amazonaws.com/`;
@@ -88,7 +88,7 @@ async function accountApi<T>(
   idToken: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${MOTIF_API_URL}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${idToken}`,

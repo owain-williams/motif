@@ -12,6 +12,18 @@
         <h1>Motif Bridge</h1>
         <p id="pairing" class="subtitle">starting…</p>
       </header>
+      <section class="cloud-account" aria-labelledby="cloud-heading">
+        <div>
+          <h2 id="cloud-heading">Cloud relay</h2>
+          <p id="cloud-status">Log in to sync Basic/Pro Ideas from anywhere.</p>
+        </div>
+        <form id="cloud-login" class="cloud-login">
+          <input id="cloud-email" type="email" autocomplete="email" placeholder="Email" required />
+          <input id="cloud-password" type="password" autocomplete="current-password" placeholder="Password" required />
+          <button type="submit">Log in</button>
+        </form>
+        <button id="cloud-logout" type="button" hidden>Log out</button>
+      </section>
       <section class="library-section">
         <h2 class="library-heading">Library</h2>
         <p id="empty" class="empty">Waiting for an idea to sync from your phone…</p>

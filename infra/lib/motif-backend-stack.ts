@@ -73,6 +73,11 @@ export class MotifBackendStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
+      cors: [{
+        allowedOrigins: ['*'],
+        allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT],
+        allowedHeaders: ['*'],
+      }],
       removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
     });
@@ -86,9 +91,17 @@ export class MotifBackendStack extends Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
       timeout: Duration.seconds(10),
       memorySize: 128,
-      environment: { TABLE_NAME: table.tableName },
+      environment: {
+        TABLE_NAME: table.tableName,
+        AUDIO_BUCKET_NAME: audioBucket.bucketName,
+      },
     });
-    table.grant(apiFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    table.grant(apiFn,
+      'dynamodb:GetItem',
+      'dynamodb:Query',
+      'dynamodb:UpdateItem',
+    );
+    audioBucket.grantReadWrite(apiFn);
 
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: 'motif-api',
@@ -98,6 +111,7 @@ export class MotifBackendStack extends Stack {
         allowHeaders: ['authorization', 'content-type'],
         allowMethods: [
           apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
           apigwv2.CorsHttpMethod.PUT,
           apigwv2.CorsHttpMethod.OPTIONS,
         ],
@@ -124,6 +138,30 @@ export class MotifBackendStack extends Stack {
     httpApi.addRoutes({
       path: '/me/tier',
       methods: [apigwv2.HttpMethod.PUT],
+      integration,
+      authorizer,
+    });
+    httpApi.addRoutes({
+      path: '/relay/manifest',
+      methods: [apigwv2.HttpMethod.GET],
+      integration,
+      authorizer,
+    });
+    httpApi.addRoutes({
+      path: '/relay/ideas',
+      methods: [apigwv2.HttpMethod.POST],
+      integration,
+      authorizer,
+    });
+    httpApi.addRoutes({
+      path: '/relay/ideas/{id}',
+      methods: [apigwv2.HttpMethod.GET],
+      integration,
+      authorizer,
+    });
+    httpApi.addRoutes({
+      path: '/relay/ideas/{id}/complete',
+      methods: [apigwv2.HttpMethod.POST],
       integration,
       authorizer,
     });

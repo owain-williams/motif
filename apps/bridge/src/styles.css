@@ -38,6 +38,54 @@ h1 {
   font-variant: tabular-nums;
 }
 
+.cloud-account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  background: #16161c;
+  border-radius: 10px;
+}
+
+.cloud-account > div {
+  flex: 1;
+}
+
+.cloud-account h2,
+.cloud-account p {
+  margin: 0;
+}
+
+.cloud-account h2 {
+  font-size: 14px;
+}
+
+.cloud-account p {
+  margin-top: 3px;
+  color: #8a8a92;
+  font-size: 12px;
+}
+
+.cloud-login {
+  display: flex;
+  gap: 8px;
+}
+
+.cloud-login input,
+.cloud-account button {
+  border: 1px solid #444450;
+  border-radius: 7px;
+  background: #252530;
+  color: #f5f5f7;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.cloud-account button {
+  cursor: pointer;
+}
+
 .library-section {
   flex: 1;
   display: flex;

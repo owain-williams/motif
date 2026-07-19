@@ -8,8 +8,9 @@ use std::fs;
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bridge_core::cloud_relay::{sync_from_cloud, HttpCloudRelay};
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
@@ -26,6 +27,8 @@ mod transcode;
 /// the address Bridge shows for pairing stable across restarts; if it's taken,
 /// the OS assigns one and the frontend shows whatever [`SyncServer`] bound.
 const DEFAULT_SYNC_PORT: u16 = 47600;
+const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(15);
+const CLOUD_API_URL: &str = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
 
 /// Shared handle the commands read: the live sync state plus the details the
 /// frontend needs to render (the pairing code and the bound port).
@@ -35,6 +38,7 @@ struct BridgeState {
     pairing_code: String,
     host: Option<String>,
     port: u16,
+    cloud_token: Arc<Mutex<Option<String>>>,
 }
 
 /// Writes received Ideas to the app data directory: audio at `ideas/<id><ext>`
@@ -140,6 +144,29 @@ fn pairing_info(state: State<'_, BridgeState>) -> PairingInfo {
     }
 }
 
+/// Enables account-scoped relay polling. The token remains in memory only and
+/// the backend verifies both account identity and Basic/Pro tier each poll.
+#[tauri::command]
+fn enable_cloud_sync(id_token: String, state: State<'_, BridgeState>) -> Result<(), String> {
+    if id_token.trim().is_empty() {
+        return Err("Login did not return a usable session".to_string());
+    }
+    *state
+        .cloud_token
+        .lock()
+        .map_err(|_| "Cloud sync unavailable")? = Some(id_token);
+    Ok(())
+}
+
+#[tauri::command]
+fn disable_cloud_sync(state: State<'_, BridgeState>) -> Result<(), String> {
+    *state
+        .cloud_token
+        .lock()
+        .map_err(|_| "Cloud sync unavailable")? = None;
+    Ok(())
+}
+
 fn idea_for_id(state: &BridgeState, id: &str) -> Result<IdeaMetadata, String> {
     state
         .sync
@@ -227,12 +254,28 @@ pub fn run() {
             let port = server.local_addr()?.port();
             std::thread::spawn(move || server.serve_forever());
 
+            // The cloud path is additive to the LAN receiver. It sleeps when no
+            // paid account is logged in and never interferes with local sync.
+            let cloud_token: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let relay_token = cloud_token.clone();
+            let relay_sync = sync.clone();
+            let relay_sink = sink.clone();
+            std::thread::spawn(move || loop {
+                let token = relay_token.lock().ok().and_then(|token| token.clone());
+                if let Some(token) = token {
+                    let relay = HttpCloudRelay::new(CLOUD_API_URL, token);
+                    let _ = sync_from_cloud(&relay, &relay_sync, relay_sink.as_ref());
+                }
+                std::thread::sleep(CLOUD_SYNC_INTERVAL);
+            });
+
             app.manage(BridgeState {
                 sync,
                 data_dir,
                 pairing_code,
                 host: local_ip(),
                 port,
+                cloud_token,
             });
             Ok(())
         })
@@ -240,6 +283,8 @@ pub fn run() {
             protocol_version,
             library,
             pairing_info,
+            enable_cloud_sync,
+            disable_cloud_sync,
             preview_audio_path,
             prepare_handoff
         ])

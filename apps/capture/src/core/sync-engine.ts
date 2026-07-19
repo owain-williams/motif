@@ -1,4 +1,4 @@
-import type { IdeaMetadata } from "@motif/shared";
+import type { IdeaMetadata, SyncTransportKind, Tier } from "@motif/shared";
 
 /**
  * Capture-side sync engine — the device-free brain behind Free-tier
@@ -52,6 +52,21 @@ export function pairWithBridge(
 /** Forgets the paired Bridge, returning the resting state. */
 export function unpair(_state: SyncEngineState): SyncEngineState {
   return UNPAIRED;
+}
+
+/**
+ * Active sync paths for this tier. Local-network remains first/preferred when
+ * a Bridge is reachable; paid tiers additionally relay through the account.
+ * Free never receives a cloud path.
+ */
+export function syncTransports(
+  tier: Tier,
+  localBridgeAvailable: boolean,
+): SyncTransportKind[] {
+  const transports: SyncTransportKind[] = [];
+  if (localBridgeAvailable) transports.push("local-network");
+  if (tier === "basic" || tier === "pro") transports.push("cloud-relay");
+  return transports;
 }
 
 /**

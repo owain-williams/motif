@@ -4,6 +4,7 @@ import {
   ideasToOffer,
   isPaired,
   pairWithBridge,
+  syncTransports,
   UNPAIRED,
   unpair,
 } from "./sync-engine";
@@ -71,6 +72,29 @@ describe("pairing state (Free tier: one Capture ↔ one Bridge)", () => {
     const start = UNPAIRED;
     pairWithBridge(start, BRIDGE);
     expect(start.pairedBridge).toBeNull();
+  });
+});
+
+describe("tiered sync transports", () => {
+  it("keeps local-network sync available for every tier when paired", () => {
+    expect(syncTransports("free", true)).toEqual(["local-network"]);
+    expect(syncTransports("basic", true)).toEqual([
+      "local-network",
+      "cloud-relay",
+    ]);
+    expect(syncTransports("pro", true)).toEqual([
+      "local-network",
+      "cloud-relay",
+    ]);
+  });
+
+  it("uses cloud relay off the local network for Basic and Pro", () => {
+    expect(syncTransports("basic", false)).toEqual(["cloud-relay"]);
+    expect(syncTransports("pro", false)).toEqual(["cloud-relay"]);
+  });
+
+  it("never gives Free a cloud relay path", () => {
+    expect(syncTransports("free", false)).toEqual([]);
   });
 });
 

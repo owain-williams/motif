@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod cloud_relay;
 pub mod server;
 
 /// Sync protocol version negotiated between Capture and Bridge. Must stay in
@@ -226,7 +227,7 @@ impl PairingResponse {
 }
 
 /// An Idea offered by Capture. Mirror of `IdeaSyncOffer`. Deserialize-only.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaSyncOffer {
     pub from: DeviceIdentity,
@@ -344,6 +345,13 @@ impl SyncState {
     pub fn accept_offer(&mut self, offer: &IdeaSyncOffer) -> IdeaSyncAck {
         let accepted = self.would_accept(offer) && self.library.insert(offer.idea.clone());
         IdeaSyncAck::new(offer.idea.id.clone(), accepted)
+    }
+
+    /// Imports an account-authenticated cloud relay Idea. Unlike a LAN offer,
+    /// this does not require local pairing: the backend's account boundary is
+    /// the trust relationship. It shares the same Library deduplication.
+    pub fn import_relay_idea(&mut self, idea: IdeaMetadata) -> bool {
+        self.library.insert(idea)
     }
 
     /// The manifest Bridge reports to Capture: the ids it already holds.

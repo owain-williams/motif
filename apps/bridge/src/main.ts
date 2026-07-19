@@ -16,6 +16,9 @@ interface PairingInfo {
 }
 
 const REFRESH_MS = 3000;
+const COGNITO_URL = "https://cognito-idp.eu-west-2.amazonaws.com/";
+const CLIENT_ID = "158crbvjn6ss89plph8p8ivo96";
+const API_URL = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
 const DRAG_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAAAKUlEQVR4nO3OMQEAAAgDINc/9K3hHFQgE1mZmZmZmZmZmZmZmZmZmZk9uwFmhQJBsT+YVAAAAABJRU5ErkJggg==";
 let selectedIdeaId: string | null = null;
@@ -129,6 +132,53 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
   );
 }
 
+async function loginForCloud(email: string, password: string): Promise<void> {
+  const status = document.querySelector<HTMLParagraphElement>("#cloud-status");
+  const form = document.querySelector<HTMLFormElement>("#cloud-login");
+  const logout = document.querySelector<HTMLButtonElement>("#cloud-logout");
+  if (!status || !form || !logout) return;
+  status.textContent = "Logging in…";
+
+  try {
+    const response = await fetch(COGNITO_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+      },
+      body: JSON.stringify({
+        ClientId: CLIENT_ID,
+        AuthFlow: "USER_PASSWORD_AUTH",
+        AuthParameters: {
+          USERNAME: email.trim().toLowerCase(),
+          PASSWORD: password,
+        },
+      }),
+    });
+    const result = (await response.json()) as {
+      AuthenticationResult?: { IdToken?: string };
+      message?: string;
+    };
+    const idToken = result.AuthenticationResult?.IdToken;
+    if (!response.ok || !idToken) throw new Error(result.message ?? "Login failed");
+
+    const profileResponse = await fetch(`${API_URL}/me`, {
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    const profile = (await profileResponse.json()) as { tier?: string };
+    if (!profileResponse.ok || (profile.tier !== "basic" && profile.tier !== "pro")) {
+      throw new Error("Cloud relay requires a Basic or Pro account.");
+    }
+
+    await invoke("enable_cloud_sync", { idToken });
+    status.textContent = `${profile.tier === "pro" ? "Pro" : "Basic"} cloud relay connected`;
+    form.hidden = true;
+    logout.hidden = false;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "Cloud login failed";
+  }
+}
+
 async function refreshLibrary(): Promise<void> {
   try {
     const ideas = await invoke<IdeaMetadata[]>("library");
@@ -139,6 +189,21 @@ async function refreshLibrary(): Promise<void> {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  document.querySelector<HTMLFormElement>("#cloud-login")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const email = document.querySelector<HTMLInputElement>("#cloud-email")?.value ?? "";
+    const password = document.querySelector<HTMLInputElement>("#cloud-password")?.value ?? "";
+    void loginForCloud(email, password);
+  });
+  document.querySelector<HTMLButtonElement>("#cloud-logout")?.addEventListener("click", () => {
+    void invoke("disable_cloud_sync");
+    const form = document.querySelector<HTMLFormElement>("#cloud-login");
+    const logout = document.querySelector<HTMLButtonElement>("#cloud-logout");
+    const status = document.querySelector<HTMLParagraphElement>("#cloud-status");
+    if (form) form.hidden = false;
+    if (logout) logout.hidden = true;
+    if (status) status.textContent = "Log in to sync Basic/Pro Ideas from anywhere.";
+  });
   void loadPairingInfo();
   void refreshLibrary();
   setInterval(() => void refreshLibrary(), REFRESH_MS);
