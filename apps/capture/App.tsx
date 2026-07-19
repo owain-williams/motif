@@ -26,6 +26,7 @@ import {
   removeIdea,
   renameIdea,
   recordingProfile,
+  setIdeaStorageState,
   SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
 import type {
@@ -42,6 +43,7 @@ import {
 } from "./src/core/recording-session";
 import { planIdeaShare } from "./src/core/idea-share";
 import {
+  ideaStorageAction,
   isPaired,
   pairWithBridge,
   syncTransports,
@@ -57,12 +59,15 @@ import {
   deleteIdeaAudio,
   ideaAudioUri,
   loadLibrary,
+  persistIdeaAudioBytes,
   persistRecordingAudio,
   readIdeaAudioBytes,
   saveLibrary,
   stageIdeaForShare,
 } from "./src/idea-storage";
 import {
+  downloadCloudIdea,
+  ensureIdeaInCloud,
   requestPairing,
   syncPendingCloudIdeas,
   syncPendingIdeas,
@@ -145,6 +150,7 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<IdeaMetadata | null>(null);
+  const [storageBusyId, setStorageBusyId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncEngineState>(UNPAIRED);
   const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
   const [showPair, setShowPair] = useState(false);
@@ -348,7 +354,7 @@ export default function App() {
   }
 
   async function onPressRecord() {
-    if (isBusy) return;
+    if (isBusy || storageBusyId !== null) return;
     setIsBusy(true);
     try {
       if (isRecording) {
@@ -412,6 +418,55 @@ export default function App() {
         "Couldn't share",
         error instanceof Error ? error.message : "Please try again.",
       );
+    }
+  }
+
+  async function handleIdeaStorageAction(idea: IdeaMetadata) {
+    const action = ideaStorageAction(tier, idea);
+    if (!action || storageBusyId !== null || isRecording) return;
+    const tokens = authTokensRef.current;
+    if (!tokens) {
+      Alert.alert("Account needed", "Log in to access this Idea's cloud audio.");
+      return;
+    }
+    const capture = captureIdentity;
+    if (!capture) {
+      Alert.alert("Please try again", "Capture is still getting ready.");
+      return;
+    }
+
+    setStorageBusyId(idea.id);
+    try {
+      if (action === "offload") {
+        const audio = await readIdeaAudioBytes(
+          idea.id,
+          audioExtension(idea.audioFormat),
+        );
+        await ensureIdeaInCloud({
+          idToken: tokens.idToken,
+          capture,
+          idea,
+          audio,
+        });
+        stopPlaybackIfPlaying(idea.id);
+        deleteIdeaAudio(idea.id, audioExtension(idea.audioFormat));
+        const next = setIdeaStorageState(library, idea.id, "offloaded");
+        saveLibrary(next);
+        setLibrary(next);
+      } else {
+        const audio = await downloadCloudIdea(tokens.idToken, idea.id);
+        persistIdeaAudioBytes(audio, idea.id, audioExtension(idea.audioFormat));
+        const next = setIdeaStorageState(library, idea.id, "on-device");
+        saveLibrary(next);
+        setLibrary(next);
+      }
+    } catch (error) {
+      Alert.alert(
+        action === "offload" ? "Couldn't offload Idea" : "Couldn't redownload Idea",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    } finally {
+      setStorageBusyId(null);
     }
   }
 
@@ -552,7 +607,7 @@ export default function App() {
           accessibilityRole="button"
           accessibilityLabel={isRecording ? "Stop recording" : "Start recording"}
           onPress={onPressRecord}
-          disabled={isBusy}
+          disabled={isBusy || storageBusyId !== null}
           style={({ pressed }) => [
             styles.recordButton,
             isRecording && styles.recordButtonActive,
@@ -634,8 +689,11 @@ export default function App() {
               <LibraryRow
                 idea={item}
                 isPlaying={playingId === item.id}
+                storageAction={ideaStorageAction(tier, item)}
+                disabled={storageBusyId !== null}
                 onPlayToggle={() => togglePlayback(item)}
                 onShare={() => shareIdea(item)}
+                onStorageAction={() => handleIdeaStorageAction(item)}
                 onRename={() => setRenameTarget(item)}
                 onDelete={() => confirmDelete(item)}
               />

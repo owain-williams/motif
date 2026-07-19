@@ -44,6 +44,22 @@ export async function persistRecordingAudio(
   return destination.uri;
 }
 
+/** Writes downloaded cloud audio back into permanent on-device storage. */
+export function persistIdeaAudioBytes(
+  audio: Uint8Array,
+  ideaId: string,
+  extension: string,
+): string {
+  const dir = ideasDirectory();
+  if (!dir.exists) {
+    dir.create({ intermediates: true });
+  }
+  const destination = ideaAudioFile(ideaId, extension);
+  if (!destination.exists) destination.create();
+  destination.write(audio);
+  return destination.uri;
+}
+
 /** Resolves the on-device audio URI for an Idea, for playback. */
 export function ideaAudioUri(ideaId: string, extension: string): string {
   return ideaAudioFile(ideaId, extension).uri;

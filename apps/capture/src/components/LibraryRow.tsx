@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { formatDuration, syntheticWaveform } from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
+import type { IdeaStorageAction } from "../core/sync-engine";
 import { Waveform } from "./Waveform";
 
 /**
@@ -13,14 +14,20 @@ export function LibraryRow({
   idea,
   isPlaying,
   onPlayToggle,
+  storageAction,
+  disabled,
   onShare,
+  onStorageAction,
   onRename,
   onDelete,
 }: {
   idea: IdeaMetadata;
   isPlaying: boolean;
+  storageAction: IdeaStorageAction | null;
+  disabled: boolean;
   onPlayToggle: () => void;
   onShare: () => void;
+  onStorageAction: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -29,13 +36,20 @@ export function LibraryRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={isPlaying ? `Pause ${idea.name}` : `Play ${idea.name}`}
-      onPress={onPlayToggle}
+      accessibilityLabel={
+        idea.storageState === "offloaded"
+          ? `${idea.name}, cloud only`
+          : isPlaying
+            ? `Pause ${idea.name}`
+            : `Play ${idea.name}`
+      }
+      disabled={disabled}
+      onPress={idea.storageState === "on-device" ? onPlayToggle : undefined}
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
     >
       <View style={styles.header}>
         <Text style={[styles.name, isPlaying && styles.namePlaying]} numberOfLines={1}>
-          {isPlaying ? "❚❚ " : "▶ "}
+          {idea.storageState === "offloaded" ? "☁ " : isPlaying ? "❚❚ " : "▶ "}
           {idea.name}
         </Text>
         <Text style={styles.duration}>{formatDuration(idea.durationMs)}</Text>
@@ -44,18 +58,36 @@ export function LibraryRow({
       <Waveform bars={bars} color={isPlaying ? "#e5484d" : "#3a3a44"} />
 
       <View style={styles.actions}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Share ${idea.name}`}
-          onPress={onShare}
-          hitSlop={8}
-          style={styles.action}
-        >
-          <Text style={styles.actionLabel}>Share</Text>
-        </Pressable>
+        {idea.storageState === "on-device" ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Share ${idea.name}`}
+            disabled={disabled}
+            onPress={onShare}
+            hitSlop={8}
+            style={styles.action}
+          >
+            <Text style={styles.actionLabel}>Share</Text>
+          </Pressable>
+        ) : null}
+        {storageAction ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${storageAction === "offload" ? "Offload" : "Redownload"} ${idea.name}`}
+            disabled={disabled}
+            onPress={onStorageAction}
+            hitSlop={8}
+            style={styles.action}
+          >
+            <Text style={styles.actionLabel}>
+              {storageAction === "offload" ? "Offload" : "Redownload"}
+            </Text>
+          </Pressable>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Rename ${idea.name}`}
+          disabled={disabled}
           onPress={onRename}
           hitSlop={8}
           style={styles.action}
@@ -65,6 +97,7 @@ export function LibraryRow({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Delete ${idea.name}`}
+          disabled={disabled}
           onPress={onDelete}
           hitSlop={8}
           style={styles.action}

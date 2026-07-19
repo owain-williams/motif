@@ -6,6 +6,7 @@ import {
   normalizeIdeaName,
   removeIdea,
   renameIdea,
+  setIdeaStorageState,
   sortLibrary,
 } from "./library.js";
 
@@ -116,6 +117,24 @@ describe("removeIdea", () => {
     const snapshot = [...library];
     removeIdea(library, "a");
     expect(library).toEqual(snapshot);
+  });
+});
+
+describe("setIdeaStorageState", () => {
+  it("keeps the Idea in place while marking its audio offloaded or on-device", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const offloaded = setIdeaStorageState(library, "a", "offloaded");
+    expect(offloaded).toEqual([
+      { ...idea("a", 2_000), storageState: "offloaded" },
+      idea("b", 1_000),
+    ]);
+    expect(setIdeaStorageState(offloaded, "a", "on-device")).toEqual(library);
+  });
+
+  it("does not mutate the input Library", () => {
+    const library = [idea("a", 1_000)];
+    setIdeaStorageState(library, "a", "offloaded");
+    expect(library).toEqual([idea("a", 1_000)]);
   });
 });
 

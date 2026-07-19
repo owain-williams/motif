@@ -1,4 +1,4 @@
-import type { IdeaMetadata } from "./idea.js";
+import type { IdeaMetadata, IdeaStorageState } from "./idea.js";
 
 /**
  * Library — the flat, reverse-chronological list of a user's Ideas shown in
@@ -39,6 +39,21 @@ export function renameIdea(
   name: string,
 ): IdeaMetadata[] {
   return library.map((idea) => (idea.id === id ? { ...idea, name } : idea));
+}
+
+/**
+ * Changes where an Idea's audio lives without removing or reordering its
+ * Library entry. The filesystem/cloud move is performed by the caller first;
+ * this helper records the completed transition in portable metadata.
+ */
+export function setIdeaStorageState(
+  library: readonly IdeaMetadata[],
+  id: string,
+  storageState: IdeaStorageState,
+): IdeaMetadata[] {
+  return library.map((idea) =>
+    idea.id === id ? { ...idea, storageState } : idea,
+  );
 }
 
 /** Removes the matching Idea from the Library, returning a new list. */

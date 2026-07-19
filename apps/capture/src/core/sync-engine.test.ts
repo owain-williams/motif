@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IdeaMetadata } from "@motif/shared";
 import {
+  ideaStorageAction,
   ideasToOffer,
   isPaired,
   pairWithBridge,
@@ -95,6 +96,21 @@ describe("tiered sync transports", () => {
 
   it("never gives Free a cloud relay path", () => {
     expect(syncTransports("free", false)).toEqual([]);
+  });
+});
+
+describe("explicit Idea storage actions", () => {
+  it("offers Offload only for on-device Ideas on Basic and Pro", () => {
+    expect(ideaStorageAction("free", idea("free", 1))).toBeNull();
+    expect(ideaStorageAction("basic", idea("basic", 1))).toBe("offload");
+    expect(ideaStorageAction("pro", idea("pro", 1))).toBe("offload");
+  });
+
+  it("offers redownload for an offloaded Idea only while cloud access is available", () => {
+    const offloaded = idea("cloud", 1, { storageState: "offloaded" });
+    expect(ideaStorageAction("free", offloaded)).toBeNull();
+    expect(ideaStorageAction("basic", offloaded)).toBe("redownload");
+    expect(ideaStorageAction("pro", offloaded)).toBe("redownload");
   });
 });
 

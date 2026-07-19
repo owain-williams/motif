@@ -59,6 +59,21 @@ export function unpair(_state: SyncEngineState): SyncEngineState {
  * a Bridge is reachable; paid tiers additionally relay through the account.
  * Free never receives a cloud path.
  */
+export type IdeaStorageAction = "offload" | "redownload";
+
+/**
+ * The explicit cloud-storage action Capture should offer for an Idea. Cloud
+ * actions are available only while the account has Basic/Pro cloud access;
+ * Free can neither offload nor fetch cloud-only audio.
+ */
+export function ideaStorageAction(
+  tier: Tier,
+  idea: IdeaMetadata,
+): IdeaStorageAction | null {
+  if (tier === "free") return null;
+  return idea.storageState === "offloaded" ? "redownload" : "offload";
+}
+
 export function syncTransports(
   tier: Tier,
   localBridgeAvailable: boolean,

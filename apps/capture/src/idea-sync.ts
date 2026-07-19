@@ -110,63 +110,116 @@ export interface CloudSyncPlan {
   readonly readAudio: (idea: IdeaMetadata) => Promise<Uint8Array>;
 }
 
+async function fetchCloudManifest(idToken: string): Promise<string[]> {
+  const response = await fetch(`${MOTIF_API_URL}/relay/manifest`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Cloud manifest fetch failed (${response.status})`);
+  }
+  const manifest = (await response.json()) as { have?: string[] };
+  return manifest.have ?? [];
+}
+
+/** Uploads one Idea and publishes it only after the cloud has all audio bytes. */
+async function uploadCloudIdea(
+  idToken: string,
+  capture: DeviceIdentity,
+  idea: IdeaMetadata,
+  audio: Uint8Array,
+): Promise<boolean> {
+  const headers = { Authorization: `Bearer ${idToken}` };
+  const offer: IdeaSyncOffer = {
+    kind: "idea-sync-offer",
+    from: capture,
+    idea,
+    audioByteLength: audio.length,
+  };
+  // API Gateway request bodies are capped at 10MB, while Pro WAV Ideas can be
+  // much larger. Transfer audio directly through an account-scoped S3 URL.
+  const initiation = await fetch(`${MOTIF_API_URL}/relay/ideas`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify(offer),
+  });
+  if (!initiation.ok) {
+    throw new Error(`Cloud Idea offer failed (${initiation.status})`);
+  }
+  const { uploadUrl } = (await initiation.json()) as { uploadUrl: string };
+  const upload = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: new Uint8Array(audio),
+  });
+  if (!upload.ok) throw new Error(`Cloud audio upload failed (${upload.status})`);
+
+  const completion = await fetch(
+    `${MOTIF_API_URL}/relay/ideas/${encodeURIComponent(idea.id)}/complete`,
+    {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(offer),
+    },
+  );
+  if (!completion.ok) {
+    throw new Error(`Cloud Idea completion failed (${completion.status})`);
+  }
+  const ack = (await completion.json()) as IdeaSyncAck;
+  return ack.accepted;
+}
+
+/**
+ * Ensures one Idea is safely present in cloud storage before an explicit
+ * offload may remove its on-device audio. Already-uploaded Ideas are untouched.
+ */
+export async function ensureIdeaInCloud(
+  plan: Omit<CloudSyncPlan, "library" | "readAudio"> & {
+    readonly idea: IdeaMetadata;
+    readonly audio: Uint8Array;
+  },
+): Promise<void> {
+  const have = await fetchCloudManifest(plan.idToken);
+  if (have.includes(plan.idea.id)) return;
+  if (!(await uploadCloudIdea(plan.idToken, plan.capture, plan.idea, plan.audio))) {
+    throw new Error("Cloud did not accept the Idea.");
+  }
+}
+
+/** Downloads an offloaded Idea's audio bytes through its short-lived URL. */
+export async function downloadCloudIdea(
+  idToken: string,
+  ideaId: string,
+): Promise<Uint8Array> {
+  const descriptor = await fetch(
+    `${MOTIF_API_URL}/relay/ideas/${encodeURIComponent(ideaId)}`,
+    { headers: { Authorization: `Bearer ${idToken}` } },
+  );
+  if (!descriptor.ok) {
+    throw new Error(`Cloud Idea download failed (${descriptor.status})`);
+  }
+  const { downloadUrl } = (await descriptor.json()) as { downloadUrl?: string };
+  if (!downloadUrl) throw new Error("Cloud Idea download URL is missing.");
+  const audio = await fetch(downloadUrl);
+  if (!audio.ok) throw new Error(`Cloud audio download failed (${audio.status})`);
+  return new Uint8Array(await audio.arrayBuffer());
+}
+
 /**
  * Copies pending Ideas into the authenticated relay. The backend independently
  * enforces Basic/Pro, so a Free token cannot open this transport even if a
  * caller is buggy. Capture keeps every local audio file after upload.
  */
 export async function syncPendingCloudIdeas(plan: CloudSyncPlan): Promise<string[]> {
-  const headers = { Authorization: `Bearer ${plan.idToken}` };
-  const manifestResponse = await fetch(`${MOTIF_API_URL}/relay/manifest`, { headers });
-  if (!manifestResponse.ok) {
-    throw new Error(`Cloud manifest fetch failed (${manifestResponse.status})`);
-  }
-  const manifest = (await manifestResponse.json()) as { have?: string[] };
-  const pending = ideasToOffer(plan.library, manifest.have ?? []);
+  const pending = ideasToOffer(plan.library, await fetchCloudManifest(plan.idToken));
   const synced: string[] = [];
-
   for (const idea of pending) {
-    const audio = await plan.readAudio(idea);
-    const offer: IdeaSyncOffer = {
-      kind: "idea-sync-offer",
-      from: plan.capture,
+    const accepted = await uploadCloudIdea(
+      plan.idToken,
+      plan.capture,
       idea,
-      audioByteLength: audio.length,
-    };
-    // API Gateway request bodies are capped at 10MB, while Pro WAV Ideas can
-    // be much larger. Ask the authenticated API for an account-scoped S3 URL,
-    // upload audio directly, then publish metadata only after S3 has verified
-    // the complete byte length.
-    const initiation = await fetch(`${MOTIF_API_URL}/relay/ideas`, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify(offer),
-    });
-    if (!initiation.ok) {
-      throw new Error(`Cloud Idea offer failed (${initiation.status})`);
-    }
-    const { uploadUrl } = (await initiation.json()) as { uploadUrl: string };
-    const uploadBytes = new Uint8Array(audio);
-    const upload = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "application/octet-stream" },
-      body: uploadBytes,
-    });
-    if (!upload.ok) throw new Error(`Cloud audio upload failed (${upload.status})`);
-
-    const completion = await fetch(
-      `${MOTIF_API_URL}/relay/ideas/${encodeURIComponent(idea.id)}/complete`,
-      {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(offer),
-      },
+      await plan.readAudio(idea),
     );
-    if (!completion.ok) {
-      throw new Error(`Cloud Idea completion failed (${completion.status})`);
-    }
-    const ack = (await completion.json()) as IdeaSyncAck;
-    if (ack.accepted) synced.push(ack.ideaId);
+    if (accepted) synced.push(idea.id);
   }
   return synced;
 }
