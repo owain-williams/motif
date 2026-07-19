@@ -86,11 +86,22 @@ export class MotifBackendStack extends Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
       timeout: Duration.seconds(10),
       memorySize: 128,
+      environment: { TABLE_NAME: table.tableName },
     });
+    table.grant(apiFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
 
     const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: 'motif-api',
-      description: 'Motif backend edge (health + authenticated whoami)',
+      description: 'Motif backend edge (health + authenticated account)',
+      corsPreflight: {
+        allowOrigins: ['*'],
+        allowHeaders: ['authorization', 'content-type'],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.PUT,
+          apigwv2.CorsHttpMethod.OPTIONS,
+        ],
+      },
     });
 
     const integration = new HttpLambdaIntegration('ApiIntegration', apiFn);
@@ -109,8 +120,15 @@ export class MotifBackendStack extends Stack {
       integration,
       authorizer,
     });
+    // Temporary debug/admin path until Stripe owns paid-tier changes.
+    httpApi.addRoutes({
+      path: '/me/tier',
+      methods: [apigwv2.HttpMethod.PUT],
+      integration,
+      authorizer,
+    });
 
-    // --- Outputs consumed by the smoke test and future app wiring ---
+    // --- Outputs consumed by the smoke test and app wiring ---
     new CfnOutput(this, 'Region', { value: this.region });
     new CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new CfnOutput(this, 'UserPoolClientId', {

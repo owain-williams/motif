@@ -27,7 +27,7 @@ import {
   renameIdea,
   SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
-import type { DeviceIdentity, IdeaMetadata, PairingRequest } from "@motif/shared";
+import type { DeviceIdentity, IdeaMetadata, PairingRequest, Tier } from "@motif/shared";
 import {
   beginRecording,
   endRecording,
@@ -67,6 +67,25 @@ import { LibraryRow } from "./src/components/LibraryRow";
 import { RenameDialog } from "./src/components/RenameDialog";
 import { PairBridgeDialog } from "./src/components/PairBridgeDialog";
 import type { PairBridgeInput } from "./src/components/PairBridgeDialog";
+import {
+  confirmSignUp,
+  loadAccount,
+  setAccountTier,
+  signIn,
+  signUp,
+} from "./src/account-client";
+import type { AuthTokens } from "./src/account-client";
+import {
+  clearAuthTokens,
+  loadAuthTokens,
+  saveAuthTokens,
+} from "./src/account-storage";
+import {
+  ANONYMOUS_ACCOUNT,
+  authenticatedAccount,
+} from "./src/core/account-session";
+import type { AccountSession } from "./src/core/account-session";
+import { AccountDialog } from "./src/components/AccountDialog";
 
 /**
  * Capture home screen: a single record button that captures an Idea and
@@ -112,6 +131,9 @@ export default function App() {
   const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
   const [showPair, setShowPair] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
+  const [showAccount, setShowAccount] = useState(false);
+  const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
   const syncInputsRef = useRef<SyncInputs | null>(null);
 
@@ -127,6 +149,24 @@ export default function App() {
       .finally(() => {
         if (active) setIsLoading(false);
       });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Restore login when possible. A missing/expired account session is soft:
+  // Capture remains fully available with anonymous Free-tier behavior.
+  useEffect(() => {
+    let active = true;
+    loadAuthTokens()
+      .then(async (tokens) => {
+        if (!tokens) return;
+        const profile = await loadAccount(tokens.idToken);
+        if (!active) return;
+        authTokensRef.current = tokens;
+        setAccount(authenticatedAccount(profile));
+      })
+      .catch(() => clearAuthTokens());
     return () => {
       active = false;
     };
@@ -377,6 +417,38 @@ export default function App() {
     setSyncStatus(null);
   }
 
+  async function login(email: string, password: string) {
+    const tokens = await signIn(email, password);
+    const profile = await loadAccount(tokens.idToken);
+    await saveAuthTokens(tokens);
+    authTokensRef.current = tokens;
+    setAccount(authenticatedAccount(profile));
+    setShowAccount(false);
+  }
+
+  async function createAccount(email: string, password: string) {
+    await signUp(email, password);
+  }
+
+  async function confirmAccount(email: string, code: string, password: string) {
+    await confirmSignUp(email, code);
+    await login(email, password);
+  }
+
+  async function changeTier(tier: Tier) {
+    const tokens = authTokensRef.current;
+    if (!tokens) throw new Error("Please log in again.");
+    const profile = await setAccountTier(tokens.idToken, tier);
+    setAccount(authenticatedAccount(profile));
+  }
+
+  async function logout() {
+    await clearAuthTokens();
+    authTokensRef.current = null;
+    setAccount(ANONYMOUS_ACCOUNT);
+    setShowAccount(false);
+  }
+
   function confirmDelete(idea: IdeaMetadata) {
     Alert.alert("Delete idea?", `"${idea.name}" will be permanently deleted.`, [
       { text: "Cancel", style: "cancel" },
@@ -397,6 +469,18 @@ export default function App() {
   return (
     <View style={styles.container}>
       <Text style={styles.brand}>Motif</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Account"
+        onPress={() => setShowAccount(true)}
+        style={styles.accountButton}
+      >
+        <Text style={styles.accountText} numberOfLines={1}>
+          {account.kind === "authenticated"
+            ? `${account.email} · ${account.tier}`
+            : "Free · Log in or create account"}
+        </Text>
+      </Pressable>
 
       <View style={styles.recordArea}>
         <Pressable
@@ -482,6 +566,17 @@ export default function App() {
         onSubmit={handlePair}
       />
 
+      <AccountDialog
+        visible={showAccount}
+        account={account}
+        onClose={() => setShowAccount(false)}
+        onLogin={login}
+        onSignUp={createAccount}
+        onConfirm={confirmAccount}
+        onSetTier={changeTier}
+        onLogout={logout}
+      />
+
       <StatusBar style="light" />
     </View>
   );
@@ -500,9 +595,23 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
   },
+  accountButton: {
+    alignSelf: "center",
+    marginTop: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    maxWidth: "100%",
+    borderRadius: 16,
+    backgroundColor: "#16161c",
+  },
+  accountText: {
+    color: "#a0a0a8",
+    fontSize: 12,
+    textTransform: "capitalize",
+  },
   recordArea: {
     alignItems: "center",
-    paddingVertical: 40,
+    paddingVertical: 28,
   },
   recordButton: {
     width: 132,

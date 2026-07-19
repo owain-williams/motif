@@ -76,6 +76,11 @@ Idea construction, Library ordering, rename/delete, and the waveform come from
 `@motif/shared`; audio persistence and playback wiring are in `src/idea-storage`
 and `App.tsx`.
 
+Capture can be used without an account at the Free tier. Its Account dialog also
+supports Cognito email sign-up/confirmation and login; logged-in sessions expose
+the account's Free/Basic/Pro tier. A temporary in-dialog tier control stands in
+for billing during development.
+
 The waveform is currently synthesized deterministically from the Idea id (a stable
 placeholder); rendering the real recorded amplitude is tracked in motif-6fu.13.
 

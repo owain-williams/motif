@@ -14,7 +14,7 @@ serverless — no VPC, RDS, NAT, or bastion, so idle cost is ~$0.
 | Cognito User Pool + app client | Account creation + login (email, `USER_PASSWORD_AUTH`) |
 | DynamoDB table `motif` | Account/Idea/tier/pairing metadata (single-table, on-demand) |
 | S3 `motif-idea-audio-<acct>-<region>` | Idea audio (empty; not yet wired to apps) |
-| API Gateway HTTP API + Lambda | `GET /health` (open), `GET /me` (Cognito JWT authorizer) |
+| API Gateway HTTP API + Lambda | `GET /health` (open), `GET /me` and `PUT /me/tier` (Cognito JWT authorizer) |
 
 Everything uses `RemovalPolicy.DESTROY` — fine for the MVP, revisit before this
 holds real user data.
@@ -44,9 +44,11 @@ Re-read anytime with:
 
 ## Notes
 
-- **`/me` needs the Cognito *ID* token**, not the access token: HTTP API's JWT
-  authorizer validates `aud` against the app client id, and Cognito access
-  tokens carry no `aud` claim (they use `client_id`).
+- **Account routes need the Cognito *ID* token**, not the access token: HTTP
+  API's JWT authorizer validates `aud` against the app client id, and Cognito
+  access tokens carry no `aud` claim (they use `client_id`). `GET /me` returns
+  a new account as Free; `PUT /me/tier` is the temporary self-service debug tier
+  control until billing integration owns paid-tier changes.
 - **Bootstrap:** this env is CDK-bootstrapped (`hnb659fds`). If a deploy fails
   with `No bucket named 'cdk-hnb659fds-assets-...'`, the bootstrap staging bucket
   was deleted out-of-band — recreate it with that exact name (block public
