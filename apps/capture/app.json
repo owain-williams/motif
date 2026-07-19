@@ -31,7 +31,8 @@
     "plugins": [
       "expo-audio",
       "expo-sharing",
-      "@siteed/audio-studio"
+      "@siteed/audio-studio",
+      "expo-background-task"
     ]
   }
 }

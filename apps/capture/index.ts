@@ -1,5 +1,7 @@
 import { registerRootComponent } from "expo";
 
+// Defines the headless sync executor before native task restoration can invoke it.
+import "./src/background-sync";
 import App from "./App";
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

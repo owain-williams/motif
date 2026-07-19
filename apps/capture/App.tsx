@@ -108,6 +108,7 @@ import {
 import type { AccountSession } from "./src/core/account-session";
 import { AccountDialog } from "./src/components/AccountDialog";
 import { LIBRARY_WAVEFORM_BAR_COUNT } from "./src/core/idea-waveform";
+import { setBackgroundSyncEnabled } from "./src/background-sync";
 
 /**
  * Capture home screen: a single record button that captures an Idea and
@@ -285,6 +286,17 @@ export default function App() {
         }
       : null;
   }, [syncState.pairedBridge, captureIdentity, library, tier, account]);
+
+  // Keep the OS-scheduled headless job enabled whenever a persisted sync path
+  // exists. It supplements this foreground timer; the OS decides the actual
+  // background execution time and may defer it well beyond the 15-minute floor.
+  useEffect(() => {
+    if (!captureIdentity) return;
+    const enabled = syncTransports(tier, syncState.pairedBridge !== null).length > 0;
+    void setBackgroundSyncEnabled(enabled).catch(() => {
+      // Unsupported/restricted scheduling is soft: foreground sync still works.
+    });
+  }, [syncState.pairedBridge, captureIdentity, tier, account]);
 
   // Sync now and on an interval whenever LAN or paid cloud relay is available.
   useEffect(() => {
