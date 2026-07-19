@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { IdeaMetadata } from "./idea.js";
-import { formatDuration, insertIdea, sortLibrary } from "./library.js";
+import {
+  formatDuration,
+  insertIdea,
+  normalizeIdeaName,
+  removeIdea,
+  renameIdea,
+  sortLibrary,
+} from "./library.js";
 
 /**
  * Library ordering + display helpers (motif-6fu.3). The Library is the flat,
  * reverse-chronological list of Ideas shown in Capture and Bridge (CONTEXT.md):
- * newest first, each row showing name + duration.
+ * newest first, each row showing name + duration. Rename/delete mutations
+ * (motif-6fu.4) live here too so both app shells stay thin.
  */
 
 function idea(id: string, capturedAt: number, durationMs = 1000): IdeaMetadata {
@@ -59,6 +67,66 @@ describe("insertIdea", () => {
     const snapshot = [...existing];
     insertIdea(existing, idea("c", 3_000));
     expect(existing).toEqual(snapshot);
+  });
+});
+
+describe("renameIdea", () => {
+  it("replaces the name of the matching Idea and nothing else", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const renamed = renameIdea(library, "b", "Chorus hook");
+    expect(renamed).toEqual([
+      idea("a", 2_000),
+      { ...idea("b", 1_000), name: "Chorus hook" },
+    ]);
+  });
+
+  it("preserves Library order — a rename never reorders", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const renamed = renameIdea(library, "a", "Zzz last alphabetically");
+    expect(renamed.map((entry) => entry.id)).toEqual(["a", "b"]);
+  });
+
+  it("leaves the Library untouched when no Idea matches", () => {
+    const library = [idea("a", 2_000)];
+    expect(renameIdea(library, "missing", "New")).toEqual(library);
+  });
+
+  it("does not mutate the input array or its Ideas", () => {
+    const library = [idea("a", 2_000)];
+    const snapshot = structuredClone(library);
+    renameIdea(library, "a", "Changed");
+    expect(library).toEqual(snapshot);
+  });
+});
+
+describe("removeIdea", () => {
+  it("drops the matching Idea so it no longer appears", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const remaining = removeIdea(library, "a");
+    expect(remaining).toEqual([idea("b", 1_000)]);
+  });
+
+  it("leaves the Library untouched when no Idea matches", () => {
+    const library = [idea("a", 2_000)];
+    expect(removeIdea(library, "missing")).toEqual(library);
+  });
+
+  it("does not mutate the input array", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const snapshot = [...library];
+    removeIdea(library, "a");
+    expect(library).toEqual(snapshot);
+  });
+});
+
+describe("normalizeIdeaName", () => {
+  it("trims surrounding whitespace", () => {
+    expect(normalizeIdeaName("  Verse idea  ")).toBe("Verse idea");
+  });
+
+  it("rejects blank names by returning null", () => {
+    expect(normalizeIdeaName("")).toBeNull();
+    expect(normalizeIdeaName("   ")).toBeNull();
   });
 });
 

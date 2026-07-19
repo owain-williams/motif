@@ -12,10 +12,19 @@ import { StatusBar } from "expo-status-bar";
 import {
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
+  useAudioPlayer,
+  useAudioPlayerStatus,
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
-import { createIdea, formatDuration, insertIdea } from "@motif/shared";
+import {
+  createIdea,
+  formatDuration,
+  insertIdea,
+  normalizeIdeaName,
+  removeIdea,
+  renameIdea,
+} from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
 import {
   beginRecording,
@@ -26,22 +35,28 @@ import {
   AUDIO_CHANNELS,
   AUDIO_EXTENSION,
   AUDIO_FORMAT,
+  audioExtension,
   RECORDING_OPTIONS,
 } from "./src/recording-config";
 import {
+  deleteIdeaAudio,
+  ideaAudioUri,
   loadLibrary,
   persistRecordingAudio,
   saveLibrary,
 } from "./src/idea-storage";
+import { LibraryRow } from "./src/components/LibraryRow";
+import { RenameDialog } from "./src/components/RenameDialog";
 
 /**
- * Capture home screen (motif-6fu.3): a single record button that captures an
- * Idea and auto-saves it — no naming prompt — into a reverse-chronological
- * Library.
+ * Capture home screen: a single record button that captures an Idea and
+ * auto-saves it — no naming prompt (motif-6fu.3) — into a reverse-chronological
+ * Library where each entry shows a waveform, plays on tap, and can be renamed
+ * or deleted (motif-6fu.4).
  *
- * This is the thin device shell. The record/stop toggle and duration live in
- * the tested `src/core` recording session; naming, Idea construction, and
- * Library ordering live in `@motif/shared`; persistence lives in
+ * This is the thin device shell. The record/stop toggle lives in the tested
+ * `src/core` recording session; naming, Idea construction, Library ordering,
+ * rename/delete, and the waveform live in `@motif/shared`; persistence lives in
  * `src/idea-storage`. Everything here just wires those to the audio engine.
  */
 function newIdeaId(capturedAt: number): string {
@@ -54,10 +69,15 @@ export default function App() {
   const recorderState = useAudioRecorderState(recorder);
   const sessionRef = useRef(IDLE_SESSION);
 
+  const player = useAudioPlayer();
+  const playerStatus = useAudioPlayerStatus(player);
+
   const [library, setLibrary] = useState<IdeaMetadata[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<IdeaMetadata | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -75,6 +95,11 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  // Clear the "playing" highlight once playback reaches the end.
+  useEffect(() => {
+    if (playerStatus.didJustFinish) setPlayingId(null);
+  }, [playerStatus.didJustFinish]);
 
   async function startRecording() {
     const { granted } = await requestRecordingPermissionsAsync();
@@ -146,6 +171,63 @@ export default function App() {
     }
   }
 
+  async function togglePlayback(idea: IdeaMetadata) {
+    // Tapping the row that's playing pauses it; tapping any other row starts
+    // that Idea from the top.
+    if (playingId === idea.id) {
+      player.pause();
+      setPlayingId(null);
+      return;
+    }
+    // Switch the session to playback (audible in silent mode) before playing —
+    // awaited so it wins the race with play() on iOS. Best-effort: if it fails
+    // we still try to play rather than leave the tap dead.
+    try {
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+    } catch {
+      // Non-fatal — fall through and attempt playback anyway.
+    }
+    player.replace(ideaAudioUri(idea.id, audioExtension(idea.audioFormat)));
+    player.play();
+    setPlayingId(idea.id);
+  }
+
+  function stopPlaybackIfPlaying(id: string) {
+    if (playingId === id) {
+      player.pause();
+      setPlayingId(null);
+    }
+  }
+
+  function submitRename(rawName: string) {
+    const target = renameTarget;
+    setRenameTarget(null);
+    if (!target) return;
+    const name = normalizeIdeaName(rawName);
+    // A blank name keeps the existing one — nothing to save.
+    if (name === null || name === target.name) return;
+    const next = renameIdea(library, target.id, name);
+    saveLibrary(next);
+    setLibrary(next);
+  }
+
+  function confirmDelete(idea: IdeaMetadata) {
+    Alert.alert("Delete idea?", `"${idea.name}" will be permanently deleted.`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          stopPlaybackIfPlaying(idea.id);
+          deleteIdeaAudio(idea.id, audioExtension(idea.audioFormat));
+          const next = removeIdea(library, idea.id);
+          saveLibrary(next);
+          setLibrary(next);
+        },
+      },
+    ]);
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.brand}>Motif</Text>
@@ -183,18 +265,24 @@ export default function App() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => (
-              <View style={styles.row}>
-                <Text style={styles.rowName} numberOfLines={1}>
-                  {item.name}
-                </Text>
-                <Text style={styles.rowDuration}>
-                  {formatDuration(item.durationMs)}
-                </Text>
-              </View>
+              <LibraryRow
+                idea={item}
+                isPlaying={playingId === item.id}
+                onPlayToggle={() => togglePlayback(item)}
+                onRename={() => setRenameTarget(item)}
+                onDelete={() => confirmDelete(item)}
+              />
             )}
           />
         )}
       </View>
+
+      <RenameDialog
+        visible={renameTarget !== null}
+        initialName={renameTarget?.name ?? ""}
+        onCancel={() => setRenameTarget(null)}
+        onSubmit={submitRename}
+      />
 
       <StatusBar style="light" />
     </View>
@@ -276,24 +364,5 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: 24,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#1c1c22",
-  },
-  rowName: {
-    color: "#f5f5f7",
-    fontSize: 15,
-    flexShrink: 1,
-    marginRight: 12,
-  },
-  rowDuration: {
-    color: "#8a8a92",
-    fontSize: 14,
-    fontVariant: ["tabular-nums"],
   },
 });

@@ -14,11 +14,11 @@ import type { IdeaMetadata } from "@motif/shared";
  */
 
 function ideasDirectory(): Directory {
-  const dir = new Directory(Paths.document, "ideas");
-  if (!dir.exists) {
-    dir.create({ intermediates: true });
-  }
-  return dir;
+  return new Directory(Paths.document, "ideas");
+}
+
+function ideaAudioFile(ideaId: string, extension: string): File {
+  return new File(ideasDirectory(), `${ideaId}${extension}`);
 }
 
 function libraryManifest(): File {
@@ -34,9 +34,26 @@ export async function persistRecordingAudio(
   ideaId: string,
   extension: string,
 ): Promise<string> {
-  const destination = new File(ideasDirectory(), `${ideaId}${extension}`);
+  const dir = ideasDirectory();
+  if (!dir.exists) {
+    dir.create({ intermediates: true });
+  }
+  const destination = ideaAudioFile(ideaId, extension);
   await new File(sourceUri).move(destination, { overwrite: true });
   return destination.uri;
+}
+
+/** Resolves the on-device audio URI for an Idea, for playback. */
+export function ideaAudioUri(ideaId: string, extension: string): string {
+  return ideaAudioFile(ideaId, extension).uri;
+}
+
+/** Deletes an Idea's on-device audio, best-effort (a missing file is fine). */
+export function deleteIdeaAudio(ideaId: string, extension: string): void {
+  const file = ideaAudioFile(ideaId, extension);
+  if (file.exists) {
+    file.delete();
+  }
 }
 
 /** Reads the persisted Library, or an empty list if none has been saved yet. */

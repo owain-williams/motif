@@ -69,10 +69,15 @@ pnpm build          # expo export (all platforms) → apps/capture/dist
 
 The home screen is the core capture loop: a single record button that starts and
 stops on tap, auto-saving each recording as an Idea (no naming prompt) into a
-reverse-chronological Library showing name + duration. The record/stop toggle and
-duration live in the tested `src/core` recording session; naming, Idea
-construction, and Library ordering come from `@motif/shared`; audio persistence is
-in `src/idea-storage`.
+reverse-chronological Library. Each Library entry shows a waveform, name, and
+duration; tapping it plays the audio, and it can be renamed or deleted in place.
+The record/stop toggle lives in the tested `src/core` recording session; naming,
+Idea construction, Library ordering, rename/delete, and the waveform come from
+`@motif/shared`; audio persistence and playback wiring are in `src/idea-storage`
+and `App.tsx`.
+
+The waveform is currently synthesized deterministically from the Idea id (a stable
+placeholder); rendering the real recorded amplitude is tracked in motif-6fu.13.
 
 ## Bridge (desktop)
 

@@ -28,6 +28,38 @@ export function insertIdea(
 }
 
 /**
+ * Renames the matching Idea, returning a new Library. Order is unchanged — a
+ * rename never reorders (the Library is sorted by capture time, not name). The
+ * caller is expected to pass a name already validated via
+ * {@link normalizeIdeaName}.
+ */
+export function renameIdea(
+  library: readonly IdeaMetadata[],
+  id: string,
+  name: string,
+): IdeaMetadata[] {
+  return library.map((idea) => (idea.id === id ? { ...idea, name } : idea));
+}
+
+/** Removes the matching Idea from the Library, returning a new list. */
+export function removeIdea(
+  library: readonly IdeaMetadata[],
+  id: string,
+): IdeaMetadata[] {
+  return library.filter((idea) => idea.id !== id);
+}
+
+/**
+ * Normalizes a user-entered Idea name: trims surrounding whitespace and rejects
+ * a blank name by returning `null`, so callers can keep the existing name
+ * rather than saving an empty one.
+ */
+export function normalizeIdeaName(raw: string): string | null {
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
  * Formats a recording length as a clock duration: `M:SS` under an hour,
  * `H:MM:SS` beyond it. Partial seconds are floored; invalid or negative
  * input clamps to zero.
