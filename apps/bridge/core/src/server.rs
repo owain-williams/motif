@@ -20,7 +20,7 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 
-use crate::{BridgeLibrary, IdeaMetadata, IdeaSyncOffer, PairingRequest, SyncState};
+use crate::{BridgeLibrary, IdeaMetadata, IdeaSyncOffer, PairingRequest, PairingState, SyncState};
 
 /// Where a receiver persists a synced Idea. Implemented by the Tauri shell
 /// (writes audio to the app data dir and the manifest to disk); a test double
@@ -33,6 +33,10 @@ pub trait SyncSink: Send + Sync {
 
     /// Called after the Library changes, so the shell can persist it.
     fn persist_library(&self, library: &BridgeLibrary);
+
+    /// Called after a successful pairing, so the shell can persist it. Sinks
+    /// used only for cloud relay can keep the default no-op implementation.
+    fn persist_pairing(&self, _pairing: &PairingState) {}
 }
 
 /// The local-network sync receiver. Bind it, then run [`serve_forever`] on a
@@ -96,14 +100,20 @@ impl SyncServer {
                 let manifest = self.state.lock().unwrap().manifest();
                 write_json(&mut stream, "200 OK", &to_json(&manifest))
             }
-            ("POST", "/motif/pair") => match serde_json::from_slice::<PairingRequest>(&request.body)
-            {
-                Ok(req) => {
-                    let response = self.state.lock().unwrap().handle_pairing(&req);
-                    write_json(&mut stream, "200 OK", &to_json(&response))
+            ("POST", "/motif/pair") => {
+                match serde_json::from_slice::<PairingRequest>(&request.body) {
+                    Ok(req) => {
+                        let mut state = self.state.lock().unwrap();
+                        let response = state.handle_pairing(&req);
+                        if response.accepted {
+                            self.sink.persist_pairing(state.pairing());
+                        }
+                        drop(state);
+                        write_json(&mut stream, "200 OK", &to_json(&response))
+                    }
+                    Err(_) => write_status(&mut stream, "400 Bad Request"),
                 }
-                Err(_) => write_status(&mut stream, "400 Bad Request"),
-            },
+            }
             ("POST", "/motif/ideas") => self.handle_offer(&mut stream, &request.body),
             _ => write_status(&mut stream, "404 Not Found"),
         }
@@ -205,11 +215,7 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Option<HttpRequest>> {
     }
     body.truncate(content_length);
 
-    Ok(Some(HttpRequest {
-        method,
-        path,
-        body,
-    }))
+    Ok(Some(HttpRequest { method, path, body }))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

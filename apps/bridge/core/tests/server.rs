@@ -11,13 +11,15 @@ use std::thread;
 
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
-    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, SyncState, SYNC_PROTOCOL_VERSION,
+    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, PairingState, SyncState,
+    SYNC_PROTOCOL_VERSION,
 };
 
 #[derive(Default)]
 struct RecordingSink {
     stored: Mutex<Vec<(String, Vec<u8>)>>,
     persisted_len: Mutex<usize>,
+    persisted_pairing: Mutex<Option<PairingState>>,
 }
 
 impl SyncSink for RecordingSink {
@@ -31,6 +33,10 @@ impl SyncSink for RecordingSink {
 
     fn persist_library(&self, library: &BridgeLibrary) {
         *self.persisted_len.lock().unwrap() = library.len();
+    }
+
+    fn persist_pairing(&self, pairing: &PairingState) {
+        *self.persisted_pairing.lock().unwrap() = Some(pairing.clone());
     }
 }
 
@@ -90,8 +96,7 @@ fn syncs_an_idea_over_the_loopback_network() {
         role: DeviceRole::Bridge,
     };
     let state = Arc::new(Mutex::new(SyncState::new(
-        identity,
-        "424242".into(),
+        PairingState::new(identity, "424242".into(), None),
         BridgeLibrary::new(),
     )));
     let sink = Arc::new(RecordingSink::default());
@@ -108,6 +113,8 @@ fn syncs_an_idea_over_the_loopback_network() {
     // Correct code pairs the two devices.
     let (_, body) = http(addr, "POST", "/motif/pair", pair_body("424242").as_bytes());
     assert!(body.contains("\"accepted\":true"), "body: {body}");
+    let persisted_pairing = sink.persisted_pairing.lock().unwrap().clone().unwrap();
+    assert_eq!(persisted_pairing.paired().unwrap().device_id, "cap-1");
 
     // A fresh Bridge has an empty manifest.
     let (_, body) = http(addr, "GET", "/motif/manifest", b"");

@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use bridge_core::cloud_relay::{sync_from_cloud, CloudRelaySource};
 use bridge_core::server::SyncSink;
-use bridge_core::{BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, SyncState};
+use bridge_core::{
+    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, PairingState, SyncState,
+};
 
 #[derive(Default)]
 struct FakeRelay {
@@ -47,12 +49,15 @@ impl SyncSink for RecordingSink {
 
 fn state() -> Arc<Mutex<SyncState>> {
     Arc::new(Mutex::new(SyncState::new(
-        DeviceIdentity {
-            device_id: "bridge-1".into(),
-            display_name: "Studio Mac".into(),
-            role: DeviceRole::Bridge,
-        },
-        "424242".into(),
+        PairingState::new(
+            DeviceIdentity {
+                device_id: "bridge-1".into(),
+                display_name: "Studio Mac".into(),
+                role: DeviceRole::Bridge,
+            },
+            "424242".into(),
+            None,
+        ),
         BridgeLibrary::new(),
     )))
 }

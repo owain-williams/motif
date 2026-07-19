@@ -273,25 +273,27 @@ impl SyncManifest {
     }
 }
 
-/// The receiver-side session: this Bridge's identity, the code it's currently
-/// displaying for pairing, the single paired Capture (Free tier), and the
-/// received Library. Owns every pairing/accept decision so the transport shell
-/// stays thin.
-#[derive(Debug, Clone)]
-pub struct SyncState {
+/// The durable part of Bridge's local-network pairing. The shell serializes
+/// this alongside the Library so Bridge keeps the same identity, pairing code,
+/// and paired Capture across restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingState {
     identity: DeviceIdentity,
     pairing_code: String,
     paired: Option<DeviceIdentity>,
-    library: BridgeLibrary,
 }
 
-impl SyncState {
-    pub fn new(identity: DeviceIdentity, pairing_code: String, library: BridgeLibrary) -> Self {
+impl PairingState {
+    pub fn new(
+        identity: DeviceIdentity,
+        pairing_code: String,
+        paired: Option<DeviceIdentity>,
+    ) -> Self {
         Self {
             identity,
             pairing_code,
-            paired: None,
-            library,
+            paired,
         }
     }
 
@@ -299,20 +301,56 @@ impl SyncState {
         &self.identity
     }
 
+    pub fn pairing_code(&self) -> &str {
+        &self.pairing_code
+    }
+
+    pub fn paired(&self) -> Option<&DeviceIdentity> {
+        self.paired.as_ref()
+    }
+}
+
+/// The receiver-side session: this Bridge's durable pairing and its received
+/// Library. Owns every pairing/accept decision so the transport shell stays
+/// thin.
+#[derive(Debug, Clone)]
+pub struct SyncState {
+    pairing: PairingState,
+    library: BridgeLibrary,
+}
+
+impl SyncState {
+    pub fn new(pairing: PairingState, library: BridgeLibrary) -> Self {
+        Self { pairing, library }
+    }
+
+    pub fn identity(&self) -> &DeviceIdentity {
+        self.pairing.identity()
+    }
+
+    pub fn pairing_code(&self) -> &str {
+        self.pairing.pairing_code()
+    }
+
+    pub fn pairing(&self) -> &PairingState {
+        &self.pairing
+    }
+
     pub fn library(&self) -> &BridgeLibrary {
         &self.library
     }
 
     pub fn is_paired(&self) -> bool {
-        self.paired.is_some()
+        self.pairing.paired.is_some()
     }
 
     pub fn paired_peer(&self) -> Option<&DeviceIdentity> {
-        self.paired.as_ref()
+        self.pairing.paired()
     }
 
     fn is_paired_with(&self, device_id: &str) -> bool {
-        self.paired
+        self.pairing
+            .paired
             .as_ref()
             .is_some_and(|p| p.device_id == device_id)
     }
@@ -323,11 +361,11 @@ impl SyncState {
     /// tier), replacing any prior pairing.
     pub fn handle_pairing(&mut self, req: &PairingRequest) -> PairingResponse {
         let accepted = is_sync_protocol_compatible(req.protocol_version)
-            && req.pairing_code == self.pairing_code;
+            && req.pairing_code == self.pairing.pairing_code;
         if accepted {
-            self.paired = Some(req.from.clone());
+            self.pairing.paired = Some(req.from.clone());
         }
-        PairingResponse::new(accepted, self.identity.clone())
+        PairingResponse::new(accepted, self.pairing.identity.clone())
     }
 
     /// Whether an offer would be accepted: it must come from the paired Capture
@@ -356,6 +394,6 @@ impl SyncState {
 
     /// The manifest Bridge reports to Capture: the ids it already holds.
     pub fn manifest(&self) -> SyncManifest {
-        SyncManifest::new(self.identity.clone(), self.library.have_ids())
+        SyncManifest::new(self.pairing.identity.clone(), self.library.have_ids())
     }
 }

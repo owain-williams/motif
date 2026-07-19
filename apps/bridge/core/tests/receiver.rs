@@ -4,9 +4,9 @@
 
 use bridge_core::{
     audio_extension, is_sync_protocol_compatible, is_valid_pairing_code, AudioFormat,
-    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, IdeaStorageState, IdeaSyncOffer,
-    IdeaStorageState::OnDevice, PairingRequest, SyncState, PAIRING_CODE_LENGTH,
-    SYNC_PROTOCOL_VERSION,
+    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, IdeaStorageState,
+    IdeaStorageState::OnDevice, IdeaSyncOffer, PairingRequest, PairingState, SyncState,
+    PAIRING_CODE_LENGTH, SYNC_PROTOCOL_VERSION,
 };
 
 fn bridge_identity() -> DeviceIdentity {
@@ -46,7 +46,10 @@ fn offer_from(capture: &DeviceIdentity, idea: IdeaMetadata) -> IdeaSyncOffer {
 }
 
 fn state_with_code(code: &str) -> SyncState {
-    SyncState::new(bridge_identity(), code.into(), BridgeLibrary::new())
+    SyncState::new(
+        PairingState::new(bridge_identity(), code.into(), None),
+        BridgeLibrary::new(),
+    )
 }
 
 #[test]
@@ -125,6 +128,20 @@ fn pairing_accepts_only_the_right_code_on_a_compatible_protocol() {
     assert_eq!(response.kind, "pairing-response");
     assert!(state.is_paired());
     assert_eq!(state.paired_peer(), Some(&capture));
+}
+
+#[test]
+fn restored_pairing_accepts_new_ideas_without_pairing_again() {
+    let capture = capture_identity("cap-1");
+    let persisted = PairingState::new(bridge_identity(), "424242".into(), Some(capture.clone()));
+    let json = serde_json::to_string(&persisted).expect("serialize pairing state");
+    let restored = serde_json::from_str(&json).expect("deserialize pairing state");
+    let state = SyncState::new(restored, BridgeLibrary::new());
+
+    assert_eq!(state.identity().device_id, "br-1");
+    assert_eq!(state.pairing_code(), "424242");
+    assert_eq!(state.paired_peer(), Some(&capture));
+    assert!(state.would_accept(&offer_from(&capture, idea("new", 1))));
 }
 
 #[test]

@@ -14,7 +14,7 @@ use bridge_core::cloud_relay::{sync_from_cloud, HttpCloudRelay};
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
-    DeviceRole, HandoffPlan, IdeaMetadata, SyncState, PAIRING_CODE_LENGTH,
+    DeviceRole, HandoffPlan, IdeaMetadata, PairingState, SyncState, PAIRING_CODE_LENGTH,
 };
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -46,6 +46,7 @@ struct BridgeState {
 struct FsSink {
     audio_dir: PathBuf,
     manifest_path: PathBuf,
+    pairing_path: PathBuf,
 }
 
 impl SyncSink for FsSink {
@@ -62,6 +63,10 @@ impl SyncSink for FsSink {
             let _ = fs::write(&self.manifest_path, json);
         }
     }
+
+    fn persist_pairing(&self, pairing: &PairingState) {
+        let _ = persist_pairing(&self.pairing_path, pairing);
+    }
 }
 
 /// Loads the persisted Library, or an empty one if none exists yet / is corrupt.
@@ -75,11 +80,25 @@ fn load_library(manifest_path: &Path) -> BridgeLibrary {
     }
 }
 
-/// A short-lived pseudo-random pairing code for this session, sized to
+/// Loads Bridge's durable LAN pairing, or returns `None` if none exists yet or
+/// the file is corrupt. The caller creates and immediately persists a fresh
+/// identity and code in that case.
+fn load_pairing(path: &Path) -> Option<PairingState> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn persist_pairing(path: &Path, pairing: &PairingState) -> std::io::Result<()> {
+    let json = serde_json::to_vec(pairing).map_err(std::io::Error::other)?;
+    fs::write(path, json)
+}
+
+/// Generates the initial pseudo-random pairing code, sized to
 /// [`PAIRING_CODE_LENGTH`] so it always passes `is_valid_pairing_code`. Free
 /// tier has no account, so this is the shared secret the user types into
-/// Capture to prove the two devices are theirs. Regenerated each launch — good
-/// enough for a LAN pairing; a persisted device secret is a later refinement.
+/// Capture to prove the two devices are theirs. It is persisted and reused on
+/// future launches.
 fn generate_pairing_code() -> String {
     let modulus = 10u64.pow(PAIRING_CODE_LENGTH as u32);
     let seed = SystemTime::now()
@@ -234,15 +253,20 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let manifest_path = data_dir.join("library.json");
+            let pairing_path = data_dir.join("pairing.json");
             let sink = Arc::new(FsSink {
                 audio_dir: data_dir.join("ideas"),
                 manifest_path: manifest_path.clone(),
+                pairing_path: pairing_path.clone(),
             });
 
-            let pairing_code = generate_pairing_code();
+            let pairing = load_pairing(&pairing_path).unwrap_or_else(|| {
+                PairingState::new(bridge_identity(), generate_pairing_code(), None)
+            });
+            persist_pairing(&pairing_path, &pairing)?;
+            let pairing_code = pairing.pairing_code().to_string();
             let sync = Arc::new(Mutex::new(SyncState::new(
-                bridge_identity(),
-                pairing_code.clone(),
+                pairing,
                 load_library(&manifest_path),
             )));
 
