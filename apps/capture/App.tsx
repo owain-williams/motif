@@ -15,19 +15,26 @@ import {
   setAudioModeAsync,
   useAudioPlayer,
   useAudioPlayerStatus,
-  useAudioRecorder,
-  useAudioRecorderState,
 } from "expo-audio";
+import { useAudioRecorder as useStudioAudioRecorder } from "@siteed/audio-studio";
 import {
+  availableRecordingChannels,
   createIdea,
   formatDuration,
   insertIdea,
   normalizeIdeaName,
   removeIdea,
   renameIdea,
+  recordingProfile,
   SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
-import type { DeviceIdentity, IdeaMetadata, PairingRequest, Tier } from "@motif/shared";
+import type {
+  DeviceIdentity,
+  IdeaMetadata,
+  PairingRequest,
+  RecordingChannelCount,
+  Tier,
+} from "@motif/shared";
 import {
   beginRecording,
   endRecording,
@@ -42,11 +49,8 @@ import {
 } from "./src/core/sync-engine";
 import type { PairedBridge, SyncEngineState } from "./src/core/sync-engine";
 import {
-  AUDIO_CHANNELS,
-  AUDIO_EXTENSION,
-  AUDIO_FORMAT,
   audioExtension,
-  RECORDING_OPTIONS,
+  recordingConfig,
 } from "./src/recording-config";
 import {
   deleteIdeaAudio,
@@ -83,6 +87,7 @@ import {
 import {
   ANONYMOUS_ACCOUNT,
   authenticatedAccount,
+  effectiveTier as effectiveAccountTier,
 } from "./src/core/account-session";
 import type { AccountSession } from "./src/core/account-session";
 import { AccountDialog } from "./src/components/AccountDialog";
@@ -114,9 +119,15 @@ interface SyncInputs {
 }
 
 export default function App() {
-  const recorder = useAudioRecorder(RECORDING_OPTIONS);
-  const recorderState = useAudioRecorderState(recorder);
+  const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
+  const [requestedChannels, setRequestedChannels] =
+    useState<RecordingChannelCount>(1);
+  const tier = effectiveAccountTier(account);
+  const channelChoices = availableRecordingChannels(tier);
+  const profile = recordingProfile(tier, requestedChannels);
+  const recorder = useStudioAudioRecorder();
   const sessionRef = useRef(IDLE_SESSION);
+  const activeRecordingProfileRef = useRef(profile);
 
   const player = useAudioPlayer();
   const playerStatus = useAudioPlayerStatus(player);
@@ -131,7 +142,6 @@ export default function App() {
   const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
   const [showPair, setShowPair] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
-  const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
   const [showAccount, setShowAccount] = useState(false);
   const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
@@ -245,36 +255,43 @@ export default function App() {
       return;
     }
     await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    await recorder.prepareToRecordAsync();
-    recorder.record();
+    activeRecordingProfileRef.current = profile;
+    await recorder.startRecording(recordingConfig(profile));
     sessionRef.current = beginRecording(IDLE_SESSION, Date.now());
     setIsRecording(true);
   }
 
   async function stopRecording() {
-    // Read the engine's encoded length before stopping — this is the Idea's
-    // true duration, and matches the live timer the user just watched. `stop()`
-    // finalizes the file, so measuring after it would add finalization latency.
-    const durationMs = Math.max(0, Math.round(recorder.currentTime * 1000));
-    await recorder.stop();
+    // Read the engine's captured length before stopping — this matches the live
+    // timer the user just watched and excludes file-finalization latency.
+    const durationMs = Math.max(0, Math.round(recorder.durationMs));
+    const completedRecording = await recorder.stopRecording();
     const { session, startedAt } = endRecording(sessionRef.current);
     sessionRef.current = session;
     setIsRecording(false);
 
-    const uri = recorder.uri;
+    const recordingProfileUsed = activeRecordingProfileRef.current;
+    const uri =
+      recordingProfileUsed.audioFormat === "aac"
+        ? completedRecording.compression?.compressedFileUri
+        : completedRecording.fileUri;
     if (!uri) {
-      Alert.alert("Recording failed", "The capture could not be saved.");
+      Alert.alert("Recording failed", "The capture could not be saved in the required format.");
       return;
     }
 
     const id = newIdeaId(startedAt);
-    await persistRecordingAudio(uri, id, AUDIO_EXTENSION);
+    await persistRecordingAudio(
+      uri,
+      id,
+      audioExtension(recordingProfileUsed.audioFormat),
+    );
     const idea = createIdea({
       id,
       capturedAt: startedAt,
       durationMs,
-      audioFormat: AUDIO_FORMAT,
-      channels: AUDIO_CHANNELS,
+      audioFormat: recordingProfileUsed.audioFormat,
+      channels: recordingProfileUsed.channels,
     });
     // Recordings are sequential (the button is disabled mid-capture), so the
     // captured `library` is current. Persist outside the state updater — updaters
@@ -473,6 +490,7 @@ export default function App() {
         accessibilityRole="button"
         accessibilityLabel="Account"
         onPress={() => setShowAccount(true)}
+        disabled={isRecording}
         style={styles.accountButton}
       >
         <Text style={styles.accountText} numberOfLines={1}>
@@ -498,9 +516,35 @@ export default function App() {
         </Pressable>
         <Text style={styles.recordHint}>
           {isRecording
-            ? formatDuration(recorderState.durationMillis)
+            ? formatDuration(recorder.durationMs)
             : "Tap to capture an idea"}
         </Text>
+        <Text style={styles.recordingFormat}>
+          {profile.audioFormat === "wav" ? "Uncompressed WAV" : "Compressed AAC"}
+          {" · "}
+          {profile.channels === 2 ? "Stereo" : "Mono"}
+        </Text>
+        {channelChoices.length > 1 ? (
+          <View style={styles.channelChoices}>
+            {channelChoices.map((channels) => (
+              <Pressable
+                key={channels}
+                accessibilityRole="button"
+                accessibilityLabel={channels === 1 ? "Record in mono" : "Record in stereo"}
+                disabled={isRecording || isBusy}
+                onPress={() => setRequestedChannels(channels)}
+                style={[
+                  styles.channelChoice,
+                  profile.channels === channels && styles.channelChoiceActive,
+                ]}
+              >
+                <Text style={styles.channelChoiceText}>
+                  {channels === 1 ? "Mono" : "Stereo"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.syncRow}>
@@ -651,6 +695,30 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginTop: 20,
     fontVariant: ["tabular-nums"],
+  },
+  recordingFormat: {
+    color: "#686872",
+    fontSize: 12,
+    marginTop: 8,
+  },
+  channelChoices: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  channelChoice: {
+    borderRadius: 8,
+    backgroundColor: "#22222a",
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+  },
+  channelChoiceActive: {
+    backgroundColor: "#9d3035",
+  },
+  channelChoiceText: {
+    color: "#f5f5f7",
+    fontSize: 13,
+    fontWeight: "600",
   },
   syncRow: {
     flexDirection: "row",

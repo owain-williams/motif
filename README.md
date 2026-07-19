@@ -32,7 +32,7 @@ support pnpm's default symlinked layout.
 
 - **Node** ≥ 20 and **pnpm** 11 (`corepack enable`)
 - **Rust** (stable) + Cargo — for Bridge
-- **Capture native runs**: Xcode + iOS Simulator (macOS) for iOS; Android Studio + an emulator for Android
+- **Capture native runs**: Xcode + iOS Simulator (macOS) for iOS; Android Studio + an emulator for Android. Capture uses a custom audio native module, so use its development build rather than Expo Go.
 - **Bridge native runs**: platform Tauri prerequisites — see https://tauri.app/start/prerequisites/ (WebKitGTK + build tools on Linux; nothing extra on macOS/Windows beyond the toolchain)
 
 ## Install
@@ -60,9 +60,9 @@ cd apps/bridge && cargo check --workspace  # compiles Tauri shell + core
 
 ```bash
 cd apps/capture
-pnpm start          # Metro dev server (open in Expo Go / dev build)
-pnpm ios            # launch on an iOS Simulator          (macOS + Xcode)
-pnpm android        # launch on an Android emulator/device (Android SDK)
+pnpm start          # Metro dev server for an installed development build
+pnpm ios            # build + launch on an iOS Simulator          (macOS + Xcode)
+pnpm android        # build + launch on an Android emulator/device (Android SDK)
 pnpm web            # run in a browser (react-native-web)
 pnpm build          # expo export (all platforms) → apps/capture/dist
 ```

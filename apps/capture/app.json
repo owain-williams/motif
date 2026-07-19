@@ -22,7 +22,8 @@
     },
     "plugins": [
       "expo-audio",
-      "expo-sharing"
+      "expo-sharing",
+      "@siteed/audio-studio"
     ]
   }
 }
