@@ -71,10 +71,10 @@ The home screen is the core capture loop: a single record button that starts and
 stops on tap, auto-saving each recording as an Idea (no naming prompt) into a
 reverse-chronological Library. Each Library entry shows a waveform, name, and
 duration; tapping it plays the audio, and it can be renamed or deleted in place.
-The record/stop toggle lives in the tested `src/core` recording session; naming,
-Idea construction, Library ordering, rename/delete, and the waveform come from
-`@motif/shared`; audio persistence and playback wiring are in `src/idea-storage`
-and `App.tsx`.
+The record/stop toggle and waveform-selection fallback live in tested `src/core`
+modules; naming, Idea construction, and Library ordering/rename/delete come from
+`@motif/shared`. Audio persistence, device-local waveform sidecars, and playback
+wiring are in `src/idea-storage` and `App.tsx`.
 
 Capture can be used without an account at the Free tier. Its Account dialog also
 supports Cognito email sign-up/confirmation and login; logged-in sessions expose
@@ -86,8 +86,10 @@ multiple phones/tablets signed into the same account contribute to one relay
 Library; Free never calls the relay and retains its single direct Capture ↔
 Bridge pairing.
 
-The waveform is currently synthesized deterministically from the Idea id (a stable
-placeholder); rendering the real recorded amplitude is tracked in motif-6fu.13.
+Capture extracts normalized amplitude peaks from each saved audio file and keeps
+them in a device-local sidecar, outside portable Idea metadata. Library entries
+render those real peaks; Ideas captured before sidecars existed retain a stable
+synthetic fallback.
 
 ## Bridge (desktop)
 
@@ -115,7 +117,7 @@ so it can be tested without a simulator, device, or window:
   construction), Tier rules, Library ordering, and — later — Offload transitions
   and share-export format selection.
 - **Capture core** — `apps/capture/src/core` (plain TypeScript, Vitest) — the
-  Capture-only recording session (record/stop toggle, duration). The Expo shell
+  Capture-only recording session and Library waveform selection. The Expo shell
   (`App.tsx`, `src/idea-storage`, `src/recording-config`) stays a thin adapter
   over it and `@motif/shared`.
 - **`bridge-core`** (Rust, `cargo test`) — local-network discovery/transfer,

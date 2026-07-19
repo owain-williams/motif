@@ -26,6 +26,10 @@ function libraryManifest(): File {
   return new File(Paths.document, "library.json");
 }
 
+function ideaWaveformFile(ideaId: string): File {
+  return new File(ideasDirectory(), `${ideaId}.waveform.json`);
+}
+
 /**
  * Moves a just-finished recording out of the recorder's temporary location
  * into permanent on-device storage, returning the persisted file's URI.
@@ -106,12 +110,51 @@ export async function stageIdeaForShare(
   return destination.uri;
 }
 
+/**
+ * Persists waveform peaks beside an Idea's audio. Waveforms are device-local
+ * presentation data and deliberately stay out of portable `IdeaMetadata`.
+ */
+export function persistIdeaWaveform(ideaId: string, peaks: readonly number[]): void {
+  const dir = ideasDirectory();
+  if (!dir.exists) {
+    dir.create({ intermediates: true });
+  }
+  const sidecar = ideaWaveformFile(ideaId);
+  if (!sidecar.exists) sidecar.create();
+  sidecar.write(JSON.stringify(peaks));
+}
+
+/** Loads valid JSON waveform sidecars; absent/corrupt files are omitted. */
+export async function loadIdeaWaveforms(
+  ideaIds: readonly string[],
+): Promise<Record<string, number[]>> {
+  const entries = await Promise.all(
+    ideaIds.map(async (ideaId): Promise<readonly [string, number[]] | null> => {
+      const sidecar = ideaWaveformFile(ideaId);
+      if (!sidecar.exists) return null;
+      try {
+        const parsed: unknown = JSON.parse(await sidecar.text());
+        return Array.isArray(parsed) ? [ideaId, parsed as number[]] : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return Object.fromEntries(entries.filter((entry) => entry !== null));
+}
+
 /** Deletes an Idea's on-device audio, best-effort (a missing file is fine). */
 export function deleteIdeaAudio(ideaId: string, extension: string): void {
   const file = ideaAudioFile(ideaId, extension);
   if (file.exists) {
     file.delete();
   }
+}
+
+/** Deletes an Idea's local waveform sidecar after permanent Idea deletion. */
+export function deleteIdeaWaveform(ideaId: string): void {
+  const sidecar = ideaWaveformFile(ideaId);
+  if (sidecar.exists) sidecar.delete();
 }
 
 /** Reads the persisted Library, or an empty list if none has been saved yet. */

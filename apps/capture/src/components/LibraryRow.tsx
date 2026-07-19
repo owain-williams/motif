@@ -1,8 +1,9 @@
 import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { formatDuration, syntheticWaveform } from "@motif/shared";
+import { formatDuration } from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
 import type { IdeaStorageAction } from "../core/sync-engine";
+import { ideaWaveform } from "../core/idea-waveform";
 import { Waveform } from "./Waveform";
 
 /**
@@ -13,6 +14,7 @@ import { Waveform } from "./Waveform";
 export function LibraryRow({
   idea,
   isPlaying,
+  waveformPeaks,
   onPlayToggle,
   storageAction,
   disabled,
@@ -23,6 +25,7 @@ export function LibraryRow({
 }: {
   idea: IdeaMetadata;
   isPlaying: boolean;
+  waveformPeaks?: readonly number[];
   storageAction: IdeaStorageAction | null;
   disabled: boolean;
   onPlayToggle: () => void;
@@ -31,7 +34,10 @@ export function LibraryRow({
   onRename: () => void;
   onDelete: () => void;
 }) {
-  const bars = useMemo(() => syntheticWaveform(idea.id), [idea.id]);
+  const bars = useMemo(
+    () => ideaWaveform(idea.id, waveformPeaks),
+    [idea.id, waveformPeaks],
+  );
 
   return (
     <Pressable

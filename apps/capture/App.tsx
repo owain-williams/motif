@@ -16,7 +16,10 @@ import {
   useAudioPlayer,
   useAudioPlayerStatus,
 } from "expo-audio";
-import { useAudioRecorder as useStudioAudioRecorder } from "@siteed/audio-studio";
+import {
+  extractPreviewBars,
+  useAudioRecorder as useStudioAudioRecorder,
+} from "@siteed/audio-studio";
 import {
   availableRecordingChannels,
   createIdea,
@@ -57,9 +60,12 @@ import {
 } from "./src/recording-config";
 import {
   deleteIdeaAudio,
+  deleteIdeaWaveform,
   ideaAudioUri,
+  loadIdeaWaveforms,
   loadLibrary,
   persistIdeaAudioBytes,
+  persistIdeaWaveform,
   persistRecordingAudio,
   readIdeaAudioBytes,
   saveLibrary,
@@ -101,6 +107,7 @@ import {
 } from "./src/core/account-session";
 import type { AccountSession } from "./src/core/account-session";
 import { AccountDialog } from "./src/components/AccountDialog";
+import { LIBRARY_WAVEFORM_BAR_COUNT } from "./src/core/idea-waveform";
 
 /**
  * Capture home screen: a single record button that captures an Idea and
@@ -110,7 +117,8 @@ import { AccountDialog } from "./src/components/AccountDialog";
  *
  * This is the thin device shell. The record/stop toggle lives in the tested
  * `src/core` recording session; naming, Idea construction, Library ordering,
- * rename/delete, and the waveform live in `@motif/shared`; persistence lives in
+ * rename/delete live in `@motif/shared`; waveform selection lives in
+ * `src/core`, while audio and waveform-sidecar persistence live in
  * `src/idea-storage`. Everything here just wires those to the audio engine.
  */
 function newIdeaId(capturedAt: number): string {
@@ -145,6 +153,7 @@ export default function App() {
   const playerStatus = useAudioPlayerStatus(player);
 
   const [library, setLibrary] = useState<IdeaMetadata[]>([]);
+  const [waveforms, setWaveforms] = useState<Record<string, readonly number[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
@@ -163,8 +172,12 @@ export default function App() {
   useEffect(() => {
     let active = true;
     loadLibrary()
-      .then((ideas) => {
-        if (active) setLibrary(ideas);
+      .then(async (ideas) => {
+        const savedWaveforms = await loadIdeaWaveforms(ideas.map((idea) => idea.id));
+        if (active) {
+          setLibrary(ideas);
+          setWaveforms(savedWaveforms);
+        }
       })
       .catch(() => {
         // A missing/corrupt manifest just means an empty Library.
@@ -286,6 +299,22 @@ export default function App() {
     return () => clearInterval(timer);
   }, [syncState.pairedBridge, captureIdentity, tier, account, runSync]);
 
+  async function extractAndPersistWaveform(ideaId: string, fileUri: string) {
+    try {
+      const preview = await extractPreviewBars({
+        fileUri,
+        numberOfBars: LIBRARY_WAVEFORM_BAR_COUNT,
+      });
+      const peaks = preview.bars.map((bar) => bar.amplitude);
+      if (peaks.length === 0) return;
+      persistIdeaWaveform(ideaId, peaks);
+      setWaveforms((current) => ({ ...current, [ideaId]: peaks }));
+    } catch {
+      // Audio remains the source of truth. If analysis is unavailable, the row
+      // uses its compatibility fallback and Capture still saves the Idea.
+    }
+  }
+
   async function startRecording() {
     const { granted } = await requestRecordingPermissionsAsync();
     if (!granted) {
@@ -322,11 +351,12 @@ export default function App() {
     }
 
     const id = newIdeaId(startedAt);
-    await persistRecordingAudio(
+    const persistedUri = await persistRecordingAudio(
       uri,
       id,
       audioExtension(recordingProfileUsed.audioFormat),
     );
+    await extractAndPersistWaveform(id, persistedUri);
     const idea = createIdea({
       id,
       capturedAt: startedAt,
@@ -455,7 +485,14 @@ export default function App() {
         setLibrary(next);
       } else {
         const audio = await downloadCloudIdea(tokens.idToken, idea.id);
-        persistIdeaAudioBytes(audio, idea.id, audioExtension(idea.audioFormat));
+        const persistedUri = persistIdeaAudioBytes(
+          audio,
+          idea.id,
+          audioExtension(idea.audioFormat),
+        );
+        if (!waveforms[idea.id]) {
+          await extractAndPersistWaveform(idea.id, persistedUri);
+        }
         const next = setIdeaStorageState(library, idea.id, "on-device");
         saveLibrary(next);
         setLibrary(next);
@@ -577,6 +614,12 @@ export default function App() {
         onPress: () => {
           stopPlaybackIfPlaying(idea.id);
           deleteIdeaAudio(idea.id, audioExtension(idea.audioFormat));
+          deleteIdeaWaveform(idea.id);
+          setWaveforms((current) => {
+            const next = { ...current };
+            delete next[idea.id];
+            return next;
+          });
           const next = removeIdea(library, idea.id);
           saveLibrary(next);
           setLibrary(next);
@@ -689,6 +732,7 @@ export default function App() {
               <LibraryRow
                 idea={item}
                 isPlaying={playingId === item.id}
+                waveformPeaks={waveforms[item.id]}
                 storageAction={ideaStorageAction(tier, item)}
                 disabled={storageBusyId !== null}
                 onPlayToggle={() => togglePlayback(item)}

@@ -1,9 +1,9 @@
 import { StyleSheet, View } from "react-native";
 
 /**
- * Renders waveform bars for a Library entry. Heights are values in (0, 1]
- * (see `syntheticWaveform` in `@motif/shared`); this component is purely
- * presentational — it knows nothing about where the heights came from.
+ * Renders waveform bars for a Library entry. Heights are normalized values in
+ * [0, 1]; this component is purely presentational and knows nothing about
+ * whether they came from audio analysis or the compatibility fallback.
  */
 const WAVEFORM_HEIGHT = 40;
 
