@@ -61,7 +61,13 @@ export async function offerIdea(
   const response = await fetch(endpointUrl(endpoint, "/motif/ideas"), {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
-    body: new Blob([frameOffer(offer, audio)]),
+    // Pass the framed bytes straight to fetch — do NOT wrap them in a Blob.
+    // React Native's Blob throws on ArrayBuffer/ArrayBufferView input, so
+    // `new Blob([Uint8Array])` failed every upload before it hit the network
+    // (motif-z1t). RN's fetch accepts a typed array as a binary body directly:
+    // it base64-encodes it across the native bridge and sends raw bytes on the
+    // wire, which is exactly what Bridge's length-framed parser expects.
+    body: frameOffer(offer, audio),
   });
   if (!response.ok) {
     throw new Error(`Idea offer failed (${response.status})`);
