@@ -5,12 +5,12 @@
 //! pairing/accept/dedup decisions live in `bridge-core`, tested without a window.
 
 use std::fs;
-use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bridge_core::cloud_relay::{sync_from_cloud, HttpCloudRelay};
+use bridge_core::discovery::BridgeAdvertisement;
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
@@ -23,9 +23,8 @@ use transcode::transcode_to_wav;
 
 mod transcode;
 
-/// Default LAN port Bridge listens on for Free-tier sync. A fixed port keeps
-/// the address Bridge shows for pairing stable across restarts; if it's taken,
-/// the OS assigns one and the frontend shows whatever [`SyncServer`] bound.
+/// Default LAN port Bridge listens on for Free-tier sync. If it is taken, the
+/// OS assigns one and Bridge advertises the actual bound port through DNS-SD.
 const DEFAULT_SYNC_PORT: u16 = 47600;
 const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(15);
 const CLOUD_API_URL: &str = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
@@ -36,9 +35,9 @@ struct BridgeState {
     sync: Arc<Mutex<SyncState>>,
     data_dir: PathBuf,
     pairing_code: String,
-    host: Option<String>,
-    port: u16,
     cloud_token: Arc<Mutex<Option<String>>>,
+    // Keeping the daemon alive keeps this Bridge advertised over Bonjour.
+    _discovery: Option<BridgeAdvertisement>,
 }
 
 /// Writes received Ideas to the app data directory: audio at `ideas/<id><ext>`
@@ -108,16 +107,6 @@ fn generate_pairing_code() -> String {
     format!("{:0width$}", seed % modulus, width = PAIRING_CODE_LENGTH)
 }
 
-/// This machine's primary LAN IP, for the user to type into Capture when
-/// pairing. No packets are sent — connecting a UDP socket to a public address
-/// just selects the outbound interface, whose local address is the LAN IP.
-/// Returns `None` if it can't be determined (e.g. offline).
-fn local_ip() -> Option<String> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    Some(socket.local_addr().ok()?.ip().to_string())
-}
-
 fn bridge_identity() -> DeviceIdentity {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -130,14 +119,10 @@ fn bridge_identity() -> DeviceIdentity {
     }
 }
 
-/// The pairing details the frontend shows so a phone can pair over the LAN:
-/// this Bridge's address (`host:port`) and the code to type into Capture.
+/// Pairing proof displayed by Bridge after Capture discovers its endpoint.
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct PairingInfo {
     code: String,
-    host: Option<String>,
-    port: u16,
 }
 
 /// Returns the sync protocol version the Rust core speaks. Lets the frontend
@@ -153,13 +138,11 @@ fn library(state: State<'_, BridgeState>) -> Vec<IdeaMetadata> {
     state.sync.lock().unwrap().library().ideas().to_vec()
 }
 
-/// The pairing code + port to display for a phone to pair against.
+/// The pairing code to display for a phone to confirm.
 #[tauri::command]
 fn pairing_info(state: State<'_, BridgeState>) -> PairingInfo {
     PairingInfo {
         code: state.pairing_code.clone(),
-        host: state.host.clone(),
-        port: state.port,
     }
 }
 
@@ -265,6 +248,7 @@ pub fn run() {
             });
             persist_pairing(&pairing_path, &pairing)?;
             let pairing_code = pairing.pairing_code().to_string();
+            let identity = pairing.identity().clone();
             let sync = Arc::new(Mutex::new(SyncState::new(
                 pairing,
                 load_library(&manifest_path),
@@ -277,6 +261,15 @@ pub fn run() {
                     .or_else(|_| SyncServer::bind(("0.0.0.0", 0), sync.clone(), sink.clone()))?;
             let port = server.local_addr()?.port();
             std::thread::spawn(move || server.serve_forever());
+
+            // Discovery is additive to the receiver. If the host cannot open
+            // an mDNS socket, manual sync remains available to existing pairs.
+            let discovery = BridgeAdvertisement::start(&identity, port)
+                .map(Some)
+                .unwrap_or_else(|error| {
+                    eprintln!("Bridge discovery unavailable: {error}");
+                    None
+                });
 
             // The cloud path is additive to the LAN receiver. It sleeps when no
             // paid account is logged in and never interferes with local sync.
@@ -297,9 +290,8 @@ pub fn run() {
                 sync,
                 data_dir,
                 pairing_code,
-                host: local_ip(),
-                port,
                 cloud_token,
+                _discovery: discovery,
             });
             Ok(())
         })

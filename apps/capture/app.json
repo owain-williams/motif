@@ -10,12 +10,20 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.motif.capture",
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "Motif syncs your ideas to Bridge on your computer over your local network."
+        "NSLocalNetworkUsageDescription": "Motif discovers Bridge and syncs your ideas over your local network.",
+        "NSBonjourServices": [
+          "_motif-bridge._tcp"
+        ]
       }
     },
     "android": {
       "package": "com.motif.capture",
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+      ]
     },
     "web": {
       "bundler": "metro"

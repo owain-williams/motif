@@ -84,7 +84,11 @@ cloud relay as well as using the existing local-network path when available.
 Signing Capture into a paid account pairs that Capture through the account, so
 multiple phones/tablets signed into the same account contribute to one relay
 Library; Free never calls the relay and retains its single direct Capture ↔
-Bridge pairing.
+Bridge pairing. Capture discovers a running Bridge automatically over
+Bonjour/mDNS on the same local network, leaving only Bridge's six-digit pairing
+code for the user to enter. Native discovery requires an installed development
+build rather than Expo Go; use a physical Android device because emulators do
+not reliably support multicast DNS.
 
 Capture extracts normalized amplitude peaks from each saved audio file and keeps
 them in a device-local sidecar, outside portable Idea metadata. Library entries

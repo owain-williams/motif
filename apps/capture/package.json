@@ -14,6 +14,7 @@
     "clean": "rm -rf dist .expo"
   },
   "dependencies": {
+    "@inthepocket/react-native-service-discovery": "^0.2.9",
     "@motif/shared": "workspace:*",
     "@siteed/audio-studio": "^3.2.1",
     "expo": "^57.0.7",

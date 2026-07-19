@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod cloud_relay;
+pub mod discovery;
 pub mod server;
 
 /// Sync protocol version negotiated between Capture and Bridge. Must stay in

@@ -11,8 +11,6 @@ import type { IdeaMetadata } from "@motif/shared";
 
 interface PairingInfo {
   readonly code: string;
-  readonly host: string | null;
-  readonly port: number;
 }
 
 const REFRESH_MS = 3000;
@@ -28,8 +26,7 @@ async function loadPairingInfo(): Promise<void> {
   if (!el) return;
   try {
     const info = await invoke<PairingInfo>("pairing_info");
-    const address = info.host ? `${info.host}:${info.port}` : `port ${info.port}`;
-    el.textContent = `Pair a phone · ${address} · code ${info.code}`;
+    el.textContent = `Pair a phone · code ${info.code}`;
   } catch {
     el.textContent = "Sync receiver unavailable";
   }

@@ -39,6 +39,9 @@ importers:
 
   apps/capture:
     dependencies:
+      '@inthepocket/react-native-service-discovery':
+        specifier: ^0.2.9
+        version: 0.2.9(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
       '@motif/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -920,6 +923,12 @@ packages:
   '@expo/xcpretty@4.4.4':
     resolution: {integrity: sha512-4aQzz9vgxcNXFfo/iyNgDDYfsU5XGKKxWxZopw0cVotHiW+U8IJbIxMaxsINs6bHhtkG3StKNPcOrn3eBuxKPw==}
     hasBin: true
+
+  '@inthepocket/react-native-service-discovery@0.2.9':
+    resolution: {integrity: sha512-HBDd0QEBV44h6XIDjHdsBi2kgdnyxS14if6yEN/Y5LnR5BDmqGYjeLVA8xvWimPi9Lr7i472ut1o3K2Ng1sveg==}
+    peerDependencies:
+      react: '*'
+      react-native: '*'
 
   '@isaacs/ttlcache@1.4.1':
     resolution: {integrity: sha512-RQgQ4uQ+pLbqXfOmieB91ejmLwvSgv9nLx6sT6sD83s7umBypgg+OIBOBbEUiJXrfpnp9j0mRhYYdzp9uqq3lA==}
@@ -4379,6 +4388,11 @@ snapshots:
       '@babel/code-frame': 7.29.7
       chalk: 4.1.2
       js-yaml: 4.3.0
+
+  '@inthepocket/react-native-service-discovery@0.2.9(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)':
+    dependencies:
+      react: 19.2.3
+      react-native: 0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3)
 
   '@isaacs/ttlcache@1.4.1': {}
 

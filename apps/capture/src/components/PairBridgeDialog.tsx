@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -10,12 +11,12 @@ import {
   View,
 } from "react-native";
 import { isValidPairingCode } from "@motif/shared";
+import { startBridgeDiscovery } from "../bridge-discovery";
+import type { DiscoveredBridge, StopBridgeDiscovery } from "../bridge-discovery";
 
 /**
- * Pair-with-Bridge prompt (motif-6fu.6). The user reads Bridge's address and
- * pairing code off its window and enters them here; the parent performs the
- * pairing handshake. Zero-config discovery (mDNS) that would fill the address
- * in automatically is a later refinement — for now pairing is by address.
+ * Pair-with-Bridge prompt. Bonjour supplies the endpoint automatically; the
+ * pairing code remains the user-confirmed proof that these are their devices.
  */
 export interface PairBridgeInput {
   readonly host: string;
@@ -32,27 +33,41 @@ export function PairBridgeDialog({
   onCancel: () => void;
   onSubmit: (input: PairBridgeInput) => void;
 }) {
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("47600");
+  const [bridge, setBridge] = useState<DiscoveredBridge | null>(null);
+  const [discoveryFailed, setDiscoveryFailed] = useState(false);
   const [code, setCode] = useState("");
 
-  // Reset the form each time the dialog opens.
   useEffect(() => {
-    if (visible) {
-      setHost("");
-      setPort("47600");
-      setCode("");
-    }
+    if (!visible) return;
+
+    let active = true;
+    let stop: StopBridgeDiscovery | null = null;
+    setBridge(null);
+    setDiscoveryFailed(false);
+    setCode("");
+
+    void startBridgeDiscovery((found) => {
+      if (active) setBridge((current) => current ?? found);
+    })
+      .then((cleanup) => {
+        if (active) stop = cleanup;
+        else cleanup();
+      })
+      .catch(() => {
+        if (active) setDiscoveryFailed(true);
+      });
+
+    return () => {
+      active = false;
+      stop?.();
+    };
   }, [visible]);
 
-  const canSubmit =
-    host.trim().length > 0 &&
-    /^\d+$/.test(port.trim()) &&
-    isValidPairingCode(code.trim());
+  const canSubmit = bridge !== null && isValidPairingCode(code.trim());
 
   function submit() {
-    if (canSubmit) {
-      onSubmit({ host: host.trim(), port: port.trim(), code: code.trim() });
+    if (canSubmit && bridge) {
+      onSubmit({ host: bridge.host, port: String(bridge.port), code: code.trim() });
     }
   }
 
@@ -64,38 +79,28 @@ export function PairBridgeDialog({
       >
         <View style={styles.card}>
           <Text style={styles.title}>Pair with Bridge</Text>
-          <Text style={styles.hint}>
-            Open Bridge on your computer and enter its address and code.
-          </Text>
-
-          <Text style={styles.label}>Address</Text>
-          <TextInput
-            style={styles.input}
-            value={host}
-            onChangeText={setHost}
-            autoFocus
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="numbers-and-punctuation"
-            placeholder="192.168.1.20"
-            placeholderTextColor="#5a5a62"
-          />
-
-          <Text style={styles.label}>Port</Text>
-          <TextInput
-            style={styles.input}
-            value={port}
-            onChangeText={setPort}
-            keyboardType="number-pad"
-            placeholder="47600"
-            placeholderTextColor="#5a5a62"
-          />
+          {bridge ? (
+            <Text style={styles.hint}>
+              Found {bridge.name}. Enter the pairing code shown on Bridge.
+            </Text>
+          ) : discoveryFailed ? (
+            <Text style={styles.hint}>
+              Couldn't search for Bridge. Check local-network permission, then reopen this
+              dialog.
+            </Text>
+          ) : (
+            <View style={styles.discoveryStatus}>
+              <ActivityIndicator color="#8a8a92" size="small" />
+              <Text style={styles.hint}>Looking for Bridge on your local network…</Text>
+            </View>
+          )}
 
           <Text style={styles.label}>Pairing code</Text>
           <TextInput
             style={styles.input}
             value={code}
             onChangeText={setCode}
+            autoFocus
             keyboardType="number-pad"
             placeholder="000000"
             placeholderTextColor="#5a5a62"
@@ -148,6 +153,11 @@ const styles = StyleSheet.create({
     color: "#8a8a92",
     fontSize: 13,
     marginBottom: 14,
+  },
+  discoveryStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   label: {
     color: "#8a8a92",
