@@ -58,8 +58,12 @@ fn state() -> Arc<Mutex<SyncState>> {
 }
 
 fn framed_offer(id: &str, audio: &[u8]) -> Vec<u8> {
+    framed_offer_from("capture-1", id, audio)
+}
+
+fn framed_offer_from(device_id: &str, id: &str, audio: &[u8]) -> Vec<u8> {
     let json = format!(
-        r#"{{"kind":"idea-sync-offer","from":{{"deviceId":"capture-1","displayName":"Phone","role":"capture"}},"idea":{{"id":"{id}","name":"Cloud Idea","capturedAt":1700000000000,"durationMs":4200,"audioFormat":"aac","channels":1,"storageState":"on-device"}},"audioByteLength":{}}}"#,
+        r#"{{"kind":"idea-sync-offer","from":{{"deviceId":"{device_id}","displayName":"Capture","role":"capture"}},"idea":{{"id":"{id}","name":"Cloud Idea","capturedAt":1700000000000,"durationMs":4200,"audioFormat":"aac","channels":1,"storageState":"on-device"}},"audioByteLength":{}}}"#,
         audio.len()
     );
     let mut frame = Vec::new();
@@ -85,6 +89,34 @@ fn imports_missing_cloud_ideas_without_local_pairing() {
     assert_eq!(state.lock().unwrap().library().have_ids(), vec!["idea-1"]);
     assert_eq!(sink.stored.lock().unwrap()[0].1, audio);
     assert_eq!(*sink.persisted.lock().unwrap(), 1);
+}
+
+#[test]
+fn combines_ideas_from_multiple_capture_devices_into_one_bridge_library() {
+    let relay = FakeRelay {
+        have: vec!["phone-idea".into(), "tablet-idea".into()],
+        offers: vec![
+            (
+                "phone-idea".into(),
+                framed_offer_from("phone", "phone-idea", b"phone audio"),
+            ),
+            (
+                "tablet-idea".into(),
+                framed_offer_from("tablet", "tablet-idea", b"tablet audio"),
+            ),
+        ],
+    };
+    let state = state();
+    let sink = RecordingSink::default();
+
+    let imported = sync_from_cloud(&relay, &state, &sink).unwrap();
+
+    assert_eq!(imported, 2);
+    let mut ids = state.lock().unwrap().library().have_ids();
+    ids.sort();
+    assert_eq!(ids, vec!["phone-idea", "tablet-idea"]);
+    assert_eq!(sink.stored.lock().unwrap().len(), 2);
+    assert_eq!(*sink.persisted.lock().unwrap(), 2);
 }
 
 #[test]

@@ -80,8 +80,11 @@ Capture can be used without an account at the Free tier. Its Account dialog also
 supports Cognito email sign-up/confirmation and login; logged-in sessions expose
 the account's Free/Basic/Pro tier. A temporary in-dialog tier control stands in
 for billing during development. Basic/Pro Ideas are copied to the authenticated
-cloud relay as well as using the existing local-network path when available;
-Free never calls the relay.
+cloud relay as well as using the existing local-network path when available.
+Signing Capture into a paid account pairs that Capture through the account, so
+multiple phones/tablets signed into the same account contribute to one relay
+Library; Free never calls the relay and retains its single direct Capture ↔
+Bridge pairing.
 
 The waveform is currently synthesized deterministically from the Idea id (a stable
 placeholder); rendering the real recorded amplitude is tracked in motif-6fu.13.
@@ -98,9 +101,10 @@ pnpm build          # frontend production build → apps/bridge/dist
 
 `tauri dev`/`tauri build` invoke the frontend build automatically
 (`beforeDevCommand` / `beforeBuildCommand` in `src-tauri/tauri.conf.json`).
-Bridge can log into the same Basic/Pro account to poll the relay while continuing
-to listen for local-network sync. Its relay token is held in memory for the
-current app session only.
+Bridge can log into the same Basic/Pro account to poll the account-scoped relay
+while continuing to listen for local-network sync. Ideas from every Capture
+signed into that account converge into the same Bridge Library. Its relay token
+is held in memory for the current app session only.
 
 ## Where behavior goes (test seams)
 

@@ -20,7 +20,9 @@ Relay routes require a Cognito ID token and reject Free accounts: `GET
 /relay/manifest`, `POST /relay/ideas`, `POST /relay/ideas/{id}/complete`, and
 `GET /relay/ideas/{id}`. The authenticated API exchanges metadata and short-lived
 account-scoped S3 URLs; audio transfers directly to S3 so Pro WAV Ideas are not
-constrained by API Gateway's 10MB request limit.
+constrained by API Gateway's 10MB request limit. The Cognito account is the paid
+pairing boundary: every Capture using the same Basic/Pro account reads and
+writes one relay manifest, while a different account cannot see those Ideas.
 
 Everything uses `RemovalPolicy.DESTROY` — fine for the MVP, revisit before this
 holds real user data.
