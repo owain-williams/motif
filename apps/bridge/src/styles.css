@@ -67,13 +67,26 @@ h1 {
 }
 
 .library-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
   padding: 12px 16px;
   background: #16161c;
+  border: 1px solid transparent;
   border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.library-row:hover,
+.library-row:focus-visible {
+  background: #1d1d25;
+  outline: none;
+}
+
+.library-row.selected {
+  border-color: #6f68ff;
 }
 
 .idea-name {
@@ -89,4 +102,68 @@ h1 {
   color: #8a8a92;
   font-variant: tabular-nums;
   flex-shrink: 0;
+}
+
+.drag-handle {
+  border: 1px solid #444450;
+  border-radius: 7px;
+  background: #252530;
+  color: #dadae2;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12px;
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-handle:hover,
+.drag-handle:focus-visible {
+  border-color: #817aff;
+  outline: none;
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 16px;
+  background: #16161c;
+  border-radius: 10px;
+}
+
+.preview[hidden] {
+  display: none;
+}
+
+.preview-copy {
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.preview-label {
+  color: #8a8a92;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.preview audio {
+  width: 100%;
+}
+
+.handoff-status {
+  min-height: 18px;
+  margin: -14px 0 0;
+  color: #aaa7ff;
+  font-size: 13px;
+  text-align: center;
+}
+
+.handoff-status.error {
+  color: #ff8585;
 }

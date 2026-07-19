@@ -17,6 +17,14 @@
         <p id="empty" class="empty">Waiting for an idea to sync from your phone…</p>
         <ul id="library" class="library"></ul>
       </section>
+      <section id="preview" class="preview" hidden>
+        <div class="preview-copy">
+          <span class="preview-label">Preview</span>
+          <strong id="preview-name"></strong>
+        </div>
+        <audio id="player" controls></audio>
+      </section>
+      <p id="handoff-status" class="handoff-status" aria-live="polite"></p>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

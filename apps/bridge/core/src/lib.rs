@@ -10,6 +10,8 @@
 //! `camelCase`/`kebab-case` serde attributes keep the JSON wire format
 //! byte-identical to what Capture sends.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 pub mod server;
@@ -102,6 +104,31 @@ pub fn audio_extension(format: AudioFormat) -> &'static str {
     }
 }
 
+/// Work required to expose an Idea as a DAW-ready WAV file. The shell executes
+/// the transcode because codecs and filesystem access are runtime concerns;
+/// this core decision keeps format gating independently testable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandoffPlan {
+    /// Pro Ideas are already WAV, so hand off the received file unchanged.
+    UseOriginal(PathBuf),
+    /// Free/Basic Ideas are AAC and need a temporary WAV export.
+    TranscodeToWav {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+}
+
+/// Plans the file Bridge gives to a DAW when an Idea is dragged out.
+pub fn plan_handoff(idea: &IdeaMetadata, source: &Path, handoff_dir: &Path) -> HandoffPlan {
+    match idea.audio_format {
+        AudioFormat::Wav => HandoffPlan::UseOriginal(source.to_path_buf()),
+        AudioFormat::Aac => HandoffPlan::TranscodeToWav {
+            source: source.to_path_buf(),
+            destination: handoff_dir.join(format!("{}.wav", idea.id)),
+        },
+    }
+}
+
 /// Bridge's Library: the flat, reverse-chronological list of received Ideas
 /// (CONTEXT.md). Deduplicated by id — a synced Idea is inserted at most once,
 /// so re-offers are idempotent.
@@ -120,8 +147,10 @@ impl BridgeLibrary {
     /// same invariants as one built by [`insert`](Self::insert).
     pub fn from_ideas(ideas: Vec<IdeaMetadata>) -> Self {
         let mut seen = std::collections::HashSet::new();
-        let mut deduped: Vec<IdeaMetadata> =
-            ideas.into_iter().filter(|i| seen.insert(i.id.clone())).collect();
+        let mut deduped: Vec<IdeaMetadata> = ideas
+            .into_iter()
+            .filter(|i| seen.insert(i.id.clone()))
+            .collect();
         Self::sort(&mut deduped);
         Self { ideas: deduped }
     }
@@ -292,8 +321,8 @@ impl SyncState {
     /// acceptance it remembers the Capture as its single paired peer (Free
     /// tier), replacing any prior pairing.
     pub fn handle_pairing(&mut self, req: &PairingRequest) -> PairingResponse {
-        let accepted =
-            is_sync_protocol_compatible(req.protocol_version) && req.pairing_code == self.pairing_code;
+        let accepted = is_sync_protocol_compatible(req.protocol_version)
+            && req.pairing_code == self.pairing_code;
         if accepted {
             self.paired = Some(req.from.clone());
         }

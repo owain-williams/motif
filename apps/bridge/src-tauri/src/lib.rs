@@ -12,11 +12,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
-    audio_extension, sync_protocol_version, BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata,
-    SyncState, PAIRING_CODE_LENGTH,
+    audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
+    DeviceRole, HandoffPlan, IdeaMetadata, SyncState, PAIRING_CODE_LENGTH,
 };
 use serde::Serialize;
 use tauri::{Manager, State};
+
+use transcode::transcode_to_wav;
+
+mod transcode;
 
 /// Default LAN port Bridge listens on for Free-tier sync. A fixed port keeps
 /// the address Bridge shows for pairing stable across restarts; if it's taken,
@@ -27,6 +31,7 @@ const DEFAULT_SYNC_PORT: u16 = 47600;
 /// frontend needs to render (the pairing code and the bound port).
 struct BridgeState {
     sync: Arc<Mutex<SyncState>>,
+    data_dir: PathBuf,
     pairing_code: String,
     host: Option<String>,
     port: u16,
@@ -42,9 +47,9 @@ struct FsSink {
 impl SyncSink for FsSink {
     fn store_audio(&self, idea: &IdeaMetadata, bytes: &[u8]) -> std::io::Result<()> {
         fs::create_dir_all(&self.audio_dir)?;
-        let file = self
-            .audio_dir
-            .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)));
+        let file =
+            self.audio_dir
+                .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)));
         fs::write(file, bytes)
     }
 
@@ -135,9 +140,68 @@ fn pairing_info(state: State<'_, BridgeState>) -> PairingInfo {
     }
 }
 
+fn idea_for_id(state: &BridgeState, id: &str) -> Result<IdeaMetadata, String> {
+    state
+        .sync
+        .lock()
+        .map_err(|_| "Library unavailable".to_string())?
+        .library()
+        .ideas()
+        .iter()
+        .find(|idea| idea.id == id)
+        .cloned()
+        .ok_or_else(|| "Idea not found".to_string())
+}
+
+fn idea_audio_path(state: &BridgeState, idea: &IdeaMetadata) -> PathBuf {
+    state
+        .data_dir
+        .join("ideas")
+        .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)))
+}
+
+/// Absolute path consumed by Tauri's scoped asset protocol for in-window audio
+/// preview. Looking the id up first prevents callers from selecting arbitrary
+/// files through this command.
+#[tauri::command]
+fn preview_audio_path(id: String, state: State<'_, BridgeState>) -> Result<String, String> {
+    let idea = idea_for_id(&state, &id)?;
+    let path = idea_audio_path(&state, &idea);
+    if !path.is_file() {
+        return Err("Idea audio is missing".to_string());
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Produces the DAW-ready file for a native drag. AAC is decoded into a
+/// temporary WAV; an already-WAV Idea returns its received file unchanged.
+#[tauri::command]
+fn prepare_handoff(id: String, state: State<'_, BridgeState>) -> Result<String, String> {
+    let idea = idea_for_id(&state, &id)?;
+    let source = idea_audio_path(&state, &idea);
+    if !source.is_file() {
+        return Err("Idea audio is missing".to_string());
+    }
+
+    let handoff_dir = state.data_dir.join("handoffs");
+    let path = match plan_handoff(&idea, &source, &handoff_dir) {
+        HandoffPlan::UseOriginal(path) => path,
+        HandoffPlan::TranscodeToWav {
+            source,
+            destination,
+        } => {
+            fs::create_dir_all(&handoff_dir).map_err(|error| error.to_string())?;
+            transcode_to_wav(&source, &destination)?;
+            destination
+        }
+    };
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -157,13 +221,15 @@ pub fn run() {
 
             // Bind the receiver on the LAN — fixed port for a stable pairing
             // address, falling back to an OS-assigned one if it's taken.
-            let server = SyncServer::bind(("0.0.0.0", DEFAULT_SYNC_PORT), sync.clone(), sink.clone())
-                .or_else(|_| SyncServer::bind(("0.0.0.0", 0), sync.clone(), sink.clone()))?;
+            let server =
+                SyncServer::bind(("0.0.0.0", DEFAULT_SYNC_PORT), sync.clone(), sink.clone())
+                    .or_else(|_| SyncServer::bind(("0.0.0.0", 0), sync.clone(), sink.clone()))?;
             let port = server.local_addr()?.port();
             std::thread::spawn(move || server.serve_forever());
 
             app.manage(BridgeState {
                 sync,
+                data_dir,
                 pairing_code,
                 host: local_ip(),
                 port,
@@ -173,7 +239,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             protocol_version,
             library,
-            pairing_info
+            pairing_info,
+            preview_audio_path,
+            prepare_handoff
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

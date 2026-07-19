@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability set for the main Bridge window (scaffold).",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default"]
+  "permissions": ["core:default", "opener:default", "drag:default"]
 }
