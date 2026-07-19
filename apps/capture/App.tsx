@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -25,14 +25,22 @@ import {
   normalizeIdeaName,
   removeIdea,
   renameIdea,
+  SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
-import type { IdeaMetadata } from "@motif/shared";
+import type { DeviceIdentity, IdeaMetadata, PairingRequest } from "@motif/shared";
 import {
   beginRecording,
   endRecording,
   IDLE_SESSION,
 } from "./src/core/recording-session";
 import { planIdeaShare } from "./src/core/idea-share";
+import {
+  isPaired,
+  pairWithBridge,
+  UNPAIRED,
+  unpair,
+} from "./src/core/sync-engine";
+import type { PairedBridge, SyncEngineState } from "./src/core/sync-engine";
 import {
   AUDIO_CHANNELS,
   AUDIO_EXTENSION,
@@ -45,11 +53,20 @@ import {
   ideaAudioUri,
   loadLibrary,
   persistRecordingAudio,
+  readIdeaAudioBytes,
   saveLibrary,
   stageIdeaForShare,
 } from "./src/idea-storage";
+import { requestPairing, syncPendingIdeas } from "./src/idea-sync";
+import {
+  clearPairedBridge,
+  loadSyncState,
+  savePairedBridge,
+} from "./src/sync-storage";
 import { LibraryRow } from "./src/components/LibraryRow";
 import { RenameDialog } from "./src/components/RenameDialog";
+import { PairBridgeDialog } from "./src/components/PairBridgeDialog";
+import type { PairBridgeInput } from "./src/components/PairBridgeDialog";
 
 /**
  * Capture home screen: a single record button that captures an Idea and
@@ -67,6 +84,16 @@ function newIdeaId(capturedAt: number): string {
   return `${capturedAt.toString(36)}-${random}`;
 }
 
+/** How often a paired Capture retries offering pending Ideas to Bridge. */
+const SYNC_INTERVAL_MS = 15_000;
+
+/** Everything a sync pass needs: the paired Bridge, who we are, what we have. */
+interface SyncInputs {
+  readonly bridge: PairedBridge;
+  readonly capture: DeviceIdentity;
+  readonly library: IdeaMetadata[];
+}
+
 export default function App() {
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const recorderState = useAudioRecorderState(recorder);
@@ -81,6 +108,12 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<IdeaMetadata | null>(null);
+  const [syncState, setSyncState] = useState<SyncEngineState>(UNPAIRED);
+  const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
+  const [showPair, setShowPair] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  // Latest sync inputs, so the periodic timer always offers the current Library.
+  const syncInputsRef = useRef<SyncInputs | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -103,6 +136,64 @@ export default function App() {
   useEffect(() => {
     if (playerStatus.didJustFinish) setPlayingId(null);
   }, [playerStatus.didJustFinish]);
+
+  // Load this Capture's identity and any remembered Bridge pairing.
+  useEffect(() => {
+    let active = true;
+    loadSyncState()
+      .then((state) => {
+        if (!active) return;
+        setCaptureIdentity(state.capture);
+        setSyncState({ pairedBridge: state.pairedBridge });
+      })
+      .catch(() => {
+        // No persisted sync state yet — Capture simply stays unpaired.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Offers every Idea Bridge is missing; failures are soft (Bridge may be off).
+  const runSync = useCallback(async ({ bridge, capture, library: ideas }: SyncInputs) => {
+    try {
+      const synced = await syncPendingIdeas({
+        endpoint: bridge.endpoint,
+        capture,
+        library: ideas,
+        readAudio: (idea) =>
+          readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat)),
+      });
+      setSyncStatus(
+        synced.length > 0
+          ? `Synced ${synced.length} idea${synced.length === 1 ? "" : "s"} to ${bridge.displayName}`
+          : `Up to date with ${bridge.displayName}`,
+      );
+    } catch {
+      setSyncStatus(`Can't reach ${bridge.displayName}`);
+    }
+  }, []);
+
+  // Keep the timer's inputs current without re-arming it on every keystroke.
+  useEffect(() => {
+    syncInputsRef.current =
+      syncState.pairedBridge && captureIdentity
+        ? { bridge: syncState.pairedBridge, capture: captureIdentity, library }
+        : null;
+  }, [syncState.pairedBridge, captureIdentity, library]);
+
+  // While paired, sync now and on an interval so a new Idea reaches Bridge as
+  // soon as both are on the network — no manual "sync now" (motif-6fu.6).
+  useEffect(() => {
+    if (!syncState.pairedBridge || !captureIdentity) return;
+    const tick = () => {
+      const inputs = syncInputsRef.current;
+      if (inputs) void runSync(inputs);
+    };
+    tick();
+    const timer = setInterval(tick, SYNC_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [syncState.pairedBridge, captureIdentity, runSync]);
 
   async function startRecording() {
     const { granted } = await requestRecordingPermissionsAsync();
@@ -151,6 +242,11 @@ export default function App() {
     const next = insertIdea(library, idea);
     saveLibrary(next);
     setLibrary(next);
+    // Nudge the new Idea to Bridge right away if paired (copy semantics — the
+    // Capture-side Idea just saved stays put); the interval is the fallback.
+    if (syncState.pairedBridge && captureIdentity) {
+      void runSync({ bridge: syncState.pairedBridge, capture: captureIdentity, library: next });
+    }
   }
 
   async function onPressRecord() {
@@ -240,6 +336,47 @@ export default function App() {
     setLibrary(next);
   }
 
+  async function handlePair(input: PairBridgeInput) {
+    setShowPair(false);
+    if (!captureIdentity) return;
+    const endpoint = { host: input.host, port: Number(input.port) };
+    const request: PairingRequest = {
+      kind: "pairing-request",
+      protocolVersion: SYNC_PROTOCOL_VERSION,
+      from: captureIdentity,
+      pairingCode: input.code,
+    };
+    try {
+      const response = await requestPairing(endpoint, request);
+      if (!response.accepted) {
+        Alert.alert(
+          "Pairing failed",
+          "Bridge didn't accept that code. Check the code shown on Bridge and try again.",
+        );
+        return;
+      }
+      const bridge: PairedBridge = {
+        deviceId: response.bridge.deviceId,
+        displayName: response.bridge.displayName,
+        endpoint,
+      };
+      await savePairedBridge(bridge);
+      setSyncState((current) => pairWithBridge(current, bridge));
+      void runSync({ bridge, capture: captureIdentity, library });
+    } catch {
+      Alert.alert(
+        "Couldn't reach Bridge",
+        "Make sure Bridge is open and your phone is on the same Wi-Fi network.",
+      );
+    }
+  }
+
+  async function handleUnpair() {
+    await clearPairedBridge();
+    setSyncState((current) => unpair(current));
+    setSyncStatus(null);
+  }
+
   function confirmDelete(idea: IdeaMetadata) {
     Alert.alert("Delete idea?", `"${idea.name}" will be permanently deleted.`, [
       { text: "Cancel", style: "cancel" },
@@ -282,6 +419,31 @@ export default function App() {
         </Text>
       </View>
 
+      <View style={styles.syncRow}>
+        <View style={styles.syncInfo}>
+          <Text style={styles.syncTitle}>
+            {isPaired(syncState) && syncState.pairedBridge
+              ? `Paired · ${syncState.pairedBridge.displayName}`
+              : "Not paired with Bridge"}
+          </Text>
+          {syncStatus ? (
+            <Text style={styles.syncStatus} numberOfLines={1}>
+              {syncStatus}
+            </Text>
+          ) : null}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={isPaired(syncState) ? "Unpair Bridge" : "Pair with Bridge"}
+          onPress={isPaired(syncState) ? handleUnpair : () => setShowPair(true)}
+          style={styles.syncButton}
+        >
+          <Text style={styles.syncButtonLabel}>
+            {isPaired(syncState) ? "Unpair" : "Pair"}
+          </Text>
+        </Pressable>
+      </View>
+
       <View style={styles.library}>
         <Text style={styles.libraryHeading}>Library</Text>
         {isLoading ? (
@@ -312,6 +474,12 @@ export default function App() {
         initialName={renameTarget?.name ?? ""}
         onCancel={() => setRenameTarget(null)}
         onSubmit={submitRename}
+      />
+
+      <PairBridgeDialog
+        visible={showPair}
+        onCancel={() => setShowPair(false)}
+        onSubmit={handlePair}
       />
 
       <StatusBar style="light" />
@@ -374,6 +542,41 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginTop: 20,
     fontVariant: ["tabular-nums"],
+  },
+  syncRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    backgroundColor: "#16161c",
+    borderRadius: 12,
+  },
+  syncInfo: {
+    flex: 1,
+  },
+  syncTitle: {
+    color: "#f5f5f7",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  syncStatus: {
+    color: "#8a8a92",
+    fontSize: 12,
+    marginTop: 2,
+  },
+  syncButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: "#22222a",
+  },
+  syncButtonLabel: {
+    color: "#f5f5f7",
+    fontSize: 14,
+    fontWeight: "600",
   },
   library: {
     flex: 1,

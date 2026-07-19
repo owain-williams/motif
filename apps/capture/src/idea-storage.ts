@@ -50,6 +50,19 @@ export function ideaAudioUri(ideaId: string, extension: string): string {
 }
 
 /**
+ * Reads an Idea's on-device audio as raw bytes, for uploading to Bridge during
+ * local-network sync (motif-6fu.6). Reading never alters the file — syncing is
+ * copy semantics, so the Capture-side Idea stays intact and playable.
+ */
+export async function readIdeaAudioBytes(
+  ideaId: string,
+  extension: string,
+): Promise<Uint8Array> {
+  const buffer = await ideaAudioFile(ideaId, extension).arrayBuffer();
+  return new Uint8Array(buffer);
+}
+
+/**
  * Stages an Idea's audio as a friendly-named file in the (evictable) cache
  * directory, ready to hand to the OS share sheet, and returns its URI. The
  * staged file is named after the Idea (`plan.fileName`) so the recipient sees a

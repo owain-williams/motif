@@ -8,8 +8,15 @@
   </head>
   <body>
     <main class="container">
-      <h1>Motif Bridge</h1>
-      <p id="status" class="subtitle">starting…</p>
+      <header class="header">
+        <h1>Motif Bridge</h1>
+        <p id="pairing" class="subtitle">starting…</p>
+      </header>
+      <section class="library-section">
+        <h2 class="library-heading">Library</h2>
+        <p id="empty" class="empty">Waiting for an idea to sync from your phone…</p>
+        <ul id="library" class="library"></ul>
+      </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

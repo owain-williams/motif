@@ -8,7 +8,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.motif.capture"
+      "bundleIdentifier": "com.motif.capture",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Motif syncs your ideas to Bridge on your computer over your local network."
+      }
     },
     "android": {
       "package": "com.motif.capture",
