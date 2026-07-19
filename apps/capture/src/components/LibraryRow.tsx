@@ -13,12 +13,14 @@ export function LibraryRow({
   idea,
   isPlaying,
   onPlayToggle,
+  onShare,
   onRename,
   onDelete,
 }: {
   idea: IdeaMetadata;
   isPlaying: boolean;
   onPlayToggle: () => void;
+  onShare: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -42,6 +44,15 @@ export function LibraryRow({
       <Waveform bars={bars} color={isPlaying ? "#e5484d" : "#3a3a44"} />
 
       <View style={styles.actions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Share ${idea.name}`}
+          onPress={onShare}
+          hitSlop={8}
+          style={styles.action}
+        >
+          <Text style={styles.actionLabel}>Share</Text>
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Rename ${idea.name}`}

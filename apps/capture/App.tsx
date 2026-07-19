@@ -9,6 +9,7 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import * as Sharing from "expo-sharing";
 import {
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
@@ -31,6 +32,7 @@ import {
   endRecording,
   IDLE_SESSION,
 } from "./src/core/recording-session";
+import { planIdeaShare } from "./src/core/idea-share";
 import {
   AUDIO_CHANNELS,
   AUDIO_EXTENSION,
@@ -44,6 +46,7 @@ import {
   loadLibrary,
   persistRecordingAudio,
   saveLibrary,
+  stageIdeaForShare,
 } from "./src/idea-storage";
 import { LibraryRow } from "./src/components/LibraryRow";
 import { RenameDialog } from "./src/components/RenameDialog";
@@ -192,6 +195,32 @@ export default function App() {
     setPlayingId(idea.id);
   }
 
+  async function shareIdea(idea: IdeaMetadata) {
+    // Hand the audio to the phone's native share sheet (ADR 0001) — always in
+    // the compressed format so it opens in any player and is never an oversized
+    // attachment. Staging/transcoding decisions live in the tested share plan
+    // and the storage shell; here we just drive the OS sheet.
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert("Sharing unavailable", "This device can't share files.");
+        return;
+      }
+      const plan = planIdeaShare(idea);
+      const sourceUri = ideaAudioUri(idea.id, audioExtension(idea.audioFormat));
+      const shareUri = await stageIdeaForShare(sourceUri, plan);
+      await Sharing.shareAsync(shareUri, {
+        mimeType: plan.mimeType,
+        UTI: plan.uti,
+        dialogTitle: `Share "${idea.name}"`,
+      });
+    } catch (error) {
+      Alert.alert(
+        "Couldn't share",
+        error instanceof Error ? error.message : "Please try again.",
+      );
+    }
+  }
+
   function stopPlaybackIfPlaying(id: string) {
     if (playingId === id) {
       player.pause();
@@ -269,6 +298,7 @@ export default function App() {
                 idea={item}
                 isPlaying={playingId === item.id}
                 onPlayToggle={() => togglePlayback(item)}
+                onShare={() => shareIdea(item)}
                 onRename={() => setRenameTarget(item)}
                 onDelete={() => confirmDelete(item)}
               />

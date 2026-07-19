@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
 import type { IdeaMetadata } from "@motif/shared";
+import type { IdeaSharePlan } from "./core/idea-share";
 
 /**
  * On-device persistence for the Library — the thin filesystem shell around the
@@ -46,6 +47,34 @@ export async function persistRecordingAudio(
 /** Resolves the on-device audio URI for an Idea, for playback. */
 export function ideaAudioUri(ideaId: string, extension: string): string {
   return ideaAudioFile(ideaId, extension).uri;
+}
+
+/**
+ * Stages an Idea's audio as a friendly-named file in the (evictable) cache
+ * directory, ready to hand to the OS share sheet, and returns its URI. The
+ * staged file is named after the Idea (`plan.fileName`) so the recipient sees a
+ * readable name, and is always in the compressed share format (ADR 0001): a
+ * compressed Idea is copied as-is; an uncompressed one is transcoded first.
+ *
+ * Staging into the cache (not the document directory) keeps the app's private
+ * storage paths out of the share sheet and lets the OS reclaim the copy later.
+ */
+export async function stageIdeaForShare(
+  sourceUri: string,
+  plan: IdeaSharePlan,
+): Promise<string> {
+  const destination = new File(Paths.cache, plan.fileName);
+  if (plan.needsTranscode) {
+    // Transcoding uncompressed (WAV/Pro) audio to compressed needs a native
+    // encoder that isn't in the Expo stack yet. No WAV Idea can exist until
+    // per-tier WAV recording (motif-6fu.9) ships, so this path is currently
+    // unreachable; the real transcode lands in motif-f7w.
+    throw new Error(
+      "Sharing uncompressed audio isn't supported yet, so this Idea can't be shared.",
+    );
+  }
+  await new File(sourceUri).copy(destination, { overwrite: true });
+  return destination.uri;
 }
 
 /** Deletes an Idea's on-device audio, best-effort (a missing file is fine). */
