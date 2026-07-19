@@ -79,7 +79,7 @@ pnpm workspaces + Turborepo. See `README.md` for full details.
 pnpm install                               # install all workspaces
 pnpm build                                 # turbo: shared → app frontends
 pnpm typecheck                             # tsc --noEmit across all packages
-pnpm test                                  # JS/TS tests (Vitest in @motif/shared)
+pnpm test                                  # JS/TS tests (Vitest in @motif/shared + apps/capture)
 cd apps/bridge && cargo test --workspace   # Rust tests (bridge-core)
 cd apps/bridge && cargo check --workspace  # compile Tauri shell + core
 ```

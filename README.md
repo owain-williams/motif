@@ -46,7 +46,7 @@ pnpm install
 ```bash
 pnpm build       # turbo: shared → bridge frontend + capture web bundle
 pnpm typecheck   # tsc --noEmit across shared, capture, bridge
-pnpm test        # JS/TS test suites (Vitest in @motif/shared)
+pnpm test        # JS/TS test suites (Vitest in @motif/shared + apps/capture)
 ```
 
 Rust side (Bridge):
@@ -67,8 +67,12 @@ pnpm web            # run in a browser (react-native-web)
 pnpm build          # expo export (all platforms) → apps/capture/dist
 ```
 
-The scaffold renders a placeholder screen ("Motif Capture") that imports a value
-from `@motif/shared` to prove the shared package resolves at runtime.
+The home screen is the core capture loop: a single record button that starts and
+stops on tap, auto-saving each recording as an Idea (no naming prompt) into a
+reverse-chronological Library showing name + duration. The record/stop toggle and
+duration live in the tested `src/core` recording session; naming, Idea
+construction, and Library ordering come from `@motif/shared`; audio persistence is
+in `src/idea-storage`.
 
 ## Bridge (desktop)
 
@@ -88,9 +92,13 @@ pnpm build          # frontend production build → apps/bridge/dist
 Per the epic's testing decisions, domain logic lives in framework-agnostic cores
 so it can be tested without a simulator, device, or window:
 
-- **`@motif/shared`** / a future Capture core module (plain TypeScript, Vitest) —
-  Idea lifecycle, Tier rules, Library ordering, Offload transitions, share-export
-  format selection.
+- **`@motif/shared`** (plain TypeScript, Vitest) — Idea lifecycle (auto-naming,
+  construction), Tier rules, Library ordering, and — later — Offload transitions
+  and share-export format selection.
+- **Capture core** — `apps/capture/src/core` (plain TypeScript, Vitest) — the
+  Capture-only recording session (record/stop toggle, duration). The Expo shell
+  (`App.tsx`, `src/idea-storage`, `src/recording-config`) stays a thin adapter
+  over it and `@motif/shared`.
 - **`bridge-core`** (Rust, `cargo test`) — local-network discovery/transfer,
   cloud relay client, transcode orchestration, multi-device pairing. The Tauri
   commands layer (`src-tauri`) stays a thin adapter over it.
