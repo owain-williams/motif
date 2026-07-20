@@ -2,11 +2,15 @@
 //! sockets — the local-network transport for Free-tier sync (motif-6fu.6).
 //!
 //! Capture (a React Native app that can only speak HTTP, not Tauri commands)
-//! reaches Bridge over the LAN through three routes:
+//! reaches Bridge over the LAN through these routes:
 //!
 //! - `GET  /motif/manifest` → the ids Bridge already holds ([`SyncManifest`]).
+//! - `GET  /motif/library`  → Bridge's full Library, so Capture can pull the
+//!   metadata edits Bridge originated and merge them (ADR 0006).
 //! - `POST /motif/pair`     → a [`PairingRequest`] JSON body → [`PairingResponse`].
 //! - `POST /motif/ideas`    → an offered Idea + its audio → [`IdeaSyncAck`].
+//! - `POST /motif/updates`  → an [`IdeaMetadataUpdate`] → [`IdeaUpdateAck`]; a
+//!   metadata-only edit merged by per-field last-write-wins.
 //!
 //! The `/motif/ideas` body is length-framed so metadata and binary audio ride
 //! in one request without base64 or multipart:
@@ -20,7 +24,10 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 
-use crate::{BridgeLibrary, IdeaMetadata, IdeaSyncOffer, PairingRequest, PairingState, SyncState};
+use crate::{
+    BridgeLibrary, IdeaMetadata, IdeaMetadataUpdate, IdeaSyncOffer, IdeaUpdateAck, PairingRequest,
+    PairingState, SyncState,
+};
 
 /// Where a receiver persists a synced Idea. Implemented by the Tauri shell
 /// (writes audio to the app data dir and the manifest to disk); a test double
@@ -100,6 +107,10 @@ impl SyncServer {
                 let manifest = self.state.lock().unwrap().manifest();
                 write_json(&mut stream, "200 OK", &to_json(&manifest))
             }
+            ("GET", "/motif/library") => {
+                let ideas = self.state.lock().unwrap().library().ideas().to_vec();
+                write_json(&mut stream, "200 OK", &to_json(&ideas))
+            }
             ("POST", "/motif/pair") => {
                 match serde_json::from_slice::<PairingRequest>(&request.body) {
                     Ok(req) => {
@@ -115,8 +126,29 @@ impl SyncServer {
                 }
             }
             ("POST", "/motif/ideas") => self.handle_offer(&mut stream, &request.body),
+            ("POST", "/motif/updates") => self.handle_update(&mut stream, &request.body),
             _ => write_status(&mut stream, "404 Not Found"),
         }
+    }
+
+    /// Merges a metadata-only edit from the paired Capture (ADR 0006). Unlike an
+    /// offer this carries no audio, so the whole body is the update JSON. A
+    /// merge that changes the Library is persisted before the ack, mirroring the
+    /// offer path's store-before-ack ordering.
+    fn handle_update(&self, stream: &mut TcpStream, body: &[u8]) -> io::Result<()> {
+        let update: IdeaMetadataUpdate = match serde_json::from_slice(body) {
+            Ok(update) => update,
+            Err(_) => return write_status(stream, "400 Bad Request"),
+        };
+        let mut state = self.state.lock().unwrap();
+        let accepted = state.apply_metadata_update(&update);
+        if accepted {
+            self.sink.persist_library(state.library());
+        }
+        let ack = IdeaUpdateAck::new(update.idea.id.clone(), accepted);
+        let payload = to_json(&ack);
+        drop(state);
+        write_json(stream, "200 OK", &payload)
     }
 
     fn handle_offer(&self, stream: &mut TcpStream, body: &[u8]) -> io::Result<()> {

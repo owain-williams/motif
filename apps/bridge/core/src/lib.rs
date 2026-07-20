@@ -96,10 +96,32 @@ pub enum IdeaStorageState {
     Offloaded,
 }
 
+/// Per-field last-edit timestamps (epoch ms) driving last-write-wins metadata
+/// merges (ADR 0006). Mirror of `IdeaFieldTimestamps` in `@motif/shared`. Every
+/// field `#[serde(default)]`s to 0 so a Library persisted before this schema
+/// still deserializes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldTimestamps {
+    #[serde(default)]
+    pub name: i64,
+    #[serde(default)]
+    pub tags: i64,
+    #[serde(default)]
+    pub instrument: i64,
+    #[serde(default)]
+    pub style: i64,
+    #[serde(default)]
+    pub tempo: i64,
+}
+
 /// Portable Idea metadata — the syncable record for one captured recording.
 /// Mirror of `IdeaMetadata` in `@motif/shared`. The on-device audio file path
-/// is deliberately *not* part of this schema (it's a device-local detail).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// is deliberately *not* part of this schema (it's a device-local detail). The
+/// editable fields (tags/instrument/style/tempo) each carry a timestamp in
+/// [`FieldTimestamps`] so bidirectional edits merge per-field (ADR 0006). `Eq`
+/// is intentionally not derived — `tempo` is a float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaMetadata {
     pub id: String,
@@ -111,6 +133,91 @@ pub struct IdeaMetadata {
     pub audio_format: AudioFormat,
     pub channels: u8,
     pub storage_state: IdeaStorageState,
+    /// Free-text tags; zero or many (CONTEXT.md).
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Instruments on the recording; same shape as `tags`.
+    #[serde(default)]
+    pub instrument: Vec<String>,
+    /// Musical styles; same shape as `tags`.
+    #[serde(default)]
+    pub style: Vec<String>,
+    /// Tempo in BPM, or `None` when unset.
+    #[serde(default)]
+    pub tempo: Option<f64>,
+    /// Per-field last-edit timestamps (ADR 0006).
+    #[serde(default)]
+    pub field_updated_at: FieldTimestamps,
+}
+
+/// A metadata-only edit applied on this device — the full desired editable
+/// state. Only the fields that actually change are re-stamped, so re-saving an
+/// unchanged field never makes it spuriously win a merge. Mirror of the edit
+/// payload the Bridge frontend sends via the `edit_idea` command.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaMetadataEdit {
+    pub name: String,
+    pub tags: Vec<String>,
+    pub instrument: Vec<String>,
+    pub style: Vec<String>,
+    pub tempo: Option<f64>,
+}
+
+/// Applies `edit` to `idea` in place, stamping each field that changes at
+/// `edited_at` — the same stamp-only-what-changed rule as `applyIdeaEdit` in
+/// `@motif/shared` (which takes a partial edit rather than this full state).
+pub fn apply_idea_edit(idea: &mut IdeaMetadata, edit: &IdeaMetadataEdit, edited_at: i64) {
+    if idea.name != edit.name {
+        idea.name = edit.name.clone();
+        idea.field_updated_at.name = edited_at;
+    }
+    if idea.tags != edit.tags {
+        idea.tags = edit.tags.clone();
+        idea.field_updated_at.tags = edited_at;
+    }
+    if idea.instrument != edit.instrument {
+        idea.instrument = edit.instrument.clone();
+        idea.field_updated_at.instrument = edited_at;
+    }
+    if idea.style != edit.style {
+        idea.style = edit.style.clone();
+        idea.field_updated_at.style = edited_at;
+    }
+    if idea.tempo != edit.tempo {
+        idea.tempo = edit.tempo;
+        idea.field_updated_at.tempo = edited_at;
+    }
+}
+
+/// Merges two versions of the same Idea by per-field last-write-wins (ADR 0006):
+/// each editable field takes the value from whichever side edited it most
+/// recently, ties keeping `local`. Device-local facts — id, capture details,
+/// audio format/channels, and `storage_state` — always stay `local`. Mirror of
+/// `mergeIdea` in `@motif/shared`.
+pub fn merge_idea(local: &IdeaMetadata, incoming: &IdeaMetadata) -> IdeaMetadata {
+    let mut merged = local.clone();
+    if incoming.field_updated_at.name > local.field_updated_at.name {
+        merged.name = incoming.name.clone();
+        merged.field_updated_at.name = incoming.field_updated_at.name;
+    }
+    if incoming.field_updated_at.tags > local.field_updated_at.tags {
+        merged.tags = incoming.tags.clone();
+        merged.field_updated_at.tags = incoming.field_updated_at.tags;
+    }
+    if incoming.field_updated_at.instrument > local.field_updated_at.instrument {
+        merged.instrument = incoming.instrument.clone();
+        merged.field_updated_at.instrument = incoming.field_updated_at.instrument;
+    }
+    if incoming.field_updated_at.style > local.field_updated_at.style {
+        merged.style = incoming.style.clone();
+        merged.field_updated_at.style = incoming.field_updated_at.style;
+    }
+    if incoming.field_updated_at.tempo > local.field_updated_at.tempo {
+        merged.tempo = incoming.tempo;
+        merged.field_updated_at.tempo = incoming.field_updated_at.tempo;
+    }
+    merged
 }
 
 /// The on-device file extension for an Idea's audio, derived from its format —
@@ -170,6 +277,14 @@ impl BridgeLibrary {
             .into_iter()
             .filter(|i| seen.insert(i.id.clone()))
             .collect();
+        for idea in &mut deduped {
+            // Mirror `withMetadataDefaults` in `@motif/shared`: a Library
+            // persisted before per-field timestamps existed loads with a name
+            // stamp of 0; treat the name as set at capture so both devices agree.
+            if idea.field_updated_at.name == 0 {
+                idea.field_updated_at.name = idea.captured_at;
+            }
+        }
         Self::sort(&mut deduped);
         Self { ideas: deduped }
     }
@@ -192,6 +307,35 @@ impl BridgeLibrary {
         self.ideas.push(idea);
         Self::sort(&mut self.ideas);
         true
+    }
+
+    /// Merges an incoming Idea's metadata into the held copy by per-field
+    /// last-write-wins (ADR 0006). Returns `true` if the merge changed anything;
+    /// an update for an Idea not held is dropped (`false`) since its audio never
+    /// arrived. Never reorders — an edit is not a capture.
+    pub fn merge(&mut self, incoming: &IdeaMetadata) -> bool {
+        let Some(existing) = self.ideas.iter_mut().find(|i| i.id == incoming.id) else {
+            return false;
+        };
+        let merged = merge_idea(existing, incoming);
+        if merged != *existing {
+            *existing = merged;
+            return true;
+        }
+        false
+    }
+
+    /// Applies a local metadata edit to the held Idea, returning its new state,
+    /// or `None` if no Idea has that id. Only changed fields are re-stamped.
+    pub fn edit(
+        &mut self,
+        id: &str,
+        edit: &IdeaMetadataEdit,
+        edited_at: i64,
+    ) -> Option<IdeaMetadata> {
+        let existing = self.ideas.iter_mut().find(|i| i.id == id)?;
+        apply_idea_edit(existing, edit, edited_at);
+        Some(existing.clone())
     }
 
     /// The ids Bridge already holds — the `have` set it reports to Capture.
@@ -245,7 +389,8 @@ impl PairingResponse {
 }
 
 /// An Idea offered by Capture. Mirror of `IdeaSyncOffer`. Deserialize-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (`Eq` is not derived — `IdeaMetadata` carries a float `tempo`.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaSyncOffer {
     pub from: DeviceIdentity,
@@ -266,6 +411,38 @@ impl IdeaSyncAck {
     fn new(idea_id: String, accepted: bool) -> Self {
         Self {
             kind: "idea-sync-ack".to_string(),
+            idea_id,
+            accepted,
+        }
+    }
+}
+
+/// A metadata-only edit propagated from a paired peer. Mirror of
+/// `IdeaMetadataUpdate` in `@motif/shared`. Deserialize-only: Bridge receives
+/// these over `POST /motif/updates` and merges them into an Idea it already
+/// holds (an update for an unknown Idea is ignored — its audio never arrived).
+/// The message's `kind` discriminant is ignored (serde skips unknown fields),
+/// so this parses the full `@motif/shared` message.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaMetadataUpdate {
+    pub from: DeviceIdentity,
+    pub idea: IdeaMetadata,
+}
+
+/// Bridge's response to an [`IdeaMetadataUpdate`]. Mirror of `IdeaUpdateAck`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaUpdateAck {
+    pub kind: String,
+    pub idea_id: String,
+    pub accepted: bool,
+}
+
+impl IdeaUpdateAck {
+    fn new(idea_id: String, accepted: bool) -> Self {
+        Self {
+            kind: "idea-update-ack".to_string(),
             idea_id,
             accepted,
         }
@@ -473,6 +650,30 @@ impl SyncState {
     /// the trust relationship. It shares the same Library deduplication.
     pub fn import_relay_idea(&mut self, idea: IdeaMetadata) -> bool {
         self.library.insert(idea)
+    }
+
+    /// Merges a metadata edit from the paired Capture into the Library by
+    /// per-field last-write-wins (ADR 0006). Like an offer, it must come from
+    /// the paired peer (the LAN trust boundary); an update for an Idea Bridge
+    /// doesn't hold, or from an unpaired peer, is ignored. Returns whether the
+    /// Library changed, so the caller knows whether to persist.
+    pub fn apply_metadata_update(&mut self, update: &IdeaMetadataUpdate) -> bool {
+        if !self.is_paired_with(&update.from.device_id) {
+            return false;
+        }
+        self.library.merge(&update.idea)
+    }
+
+    /// Applies a local metadata edit made on Bridge, returning the updated Idea
+    /// (or `None` if the id is unknown). The updated Idea, stamped for merge, is
+    /// what Bridge later serves to Capture so the edit propagates back.
+    pub fn edit_idea(
+        &mut self,
+        id: &str,
+        edit: &IdeaMetadataEdit,
+        edited_at: i64,
+    ) -> Option<IdeaMetadata> {
+        self.library.edit(id, edit, edited_at)
     }
 
     /// The manifest Bridge reports to Capture: the ids it already holds.

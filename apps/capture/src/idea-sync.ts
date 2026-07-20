@@ -1,12 +1,15 @@
 import type {
   DeviceIdentity,
   IdeaMetadata,
+  IdeaMetadataUpdate,
   IdeaSyncAck,
   IdeaSyncOffer,
+  IdeaUpdateAck,
   PairingRequest,
   PairingResponse,
 } from "@motif/shared";
-import { ideasToOffer } from "./core/sync-engine";
+import { withMetadataDefaults } from "@motif/shared";
+import { ideasToOffer, reconcileMetadata } from "./core/sync-engine";
 import type { BridgeEndpoint } from "./core/sync-engine";
 import { frameOffer } from "./core/sync-wire";
 import { MOTIF_API_URL } from "./account-client";
@@ -75,6 +78,37 @@ export async function offerIdea(
   return (await response.json()) as IdeaSyncAck;
 }
 
+/** Pushes one metadata-only edit to Bridge, returning its ack. */
+export async function pushIdeaUpdate(
+  endpoint: BridgeEndpoint,
+  update: IdeaMetadataUpdate,
+): Promise<IdeaUpdateAck> {
+  const response = await fetch(endpointUrl(endpoint, "/motif/updates"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!response.ok) {
+    throw new Error(`Idea update failed (${response.status})`);
+  }
+  return (await response.json()) as IdeaUpdateAck;
+}
+
+/** Fetches Bridge's full Library so Capture can merge Bridge-originated edits. */
+export async function fetchBridgeLibrary(
+  endpoint: BridgeEndpoint,
+): Promise<IdeaMetadata[]> {
+  const response = await fetch(endpointUrl(endpoint, "/motif/library"));
+  if (!response.ok) {
+    throw new Error(`Library fetch failed (${response.status})`);
+  }
+  const ideas = (await response.json()) as unknown;
+  // Bridge may hold Ideas persisted before the metadata schema; normalize them.
+  return Array.isArray(ideas)
+    ? ideas.map((idea) => withMetadataDefaults(idea as IdeaMetadata))
+    : [];
+}
+
 export interface SyncPlan {
   readonly endpoint: BridgeEndpoint;
   /** This Capture's identity, stamped on every offer. */
@@ -82,6 +116,33 @@ export interface SyncPlan {
   readonly library: readonly IdeaMetadata[];
   /** Reads an Idea's on-device audio bytes to upload. */
   readonly readAudio: (idea: IdeaMetadata) => Promise<Uint8Array>;
+}
+
+export interface MetadataSyncPlan {
+  readonly endpoint: BridgeEndpoint;
+  readonly capture: DeviceIdentity;
+  readonly library: readonly IdeaMetadata[];
+}
+
+/**
+ * Reconciles metadata with Bridge in both directions: pulls Bridge's Library,
+ * merges each shared Idea by per-field last-write-wins, pushes back any Idea
+ * whose local copy is newer, and returns the merged Library for the caller to
+ * persist. Metadata-only — audio is never touched, so this stays copy-safe.
+ */
+export async function syncMetadataWithBridge(
+  plan: MetadataSyncPlan,
+): Promise<IdeaMetadata[]> {
+  const remote = await fetchBridgeLibrary(plan.endpoint);
+  const { merged, toPush } = reconcileMetadata(plan.library, remote);
+  for (const idea of toPush) {
+    await pushIdeaUpdate(plan.endpoint, {
+      kind: "idea-metadata-update",
+      from: plan.capture,
+      idea,
+    });
+  }
+  return merged;
 }
 
 /**

@@ -24,12 +24,16 @@ import {
 import {
   availableRecordingChannels,
   createIdea,
+  distinctFieldValues,
+  editIdea,
   formatDuration,
   insertIdea,
+  mergeIdea,
   normalizeIdeaName,
   removeIdea,
   renameIdea,
   recordingProfile,
+  sameEditableMetadata,
   searchLibrary,
   setIdeaStorageState,
   SYNC_PROTOCOL_VERSION,
@@ -37,6 +41,7 @@ import {
 import type {
   DeviceIdentity,
   IdeaMetadata,
+  IdeaMetadataEdit,
   PairingRequest,
   RecordingChannelCount,
   Tier,
@@ -76,7 +81,9 @@ import {
 import {
   downloadCloudIdea,
   ensureIdeaInCloud,
+  pushIdeaUpdate,
   requestPairing,
+  syncMetadataWithBridge,
   syncPendingCloudIdeas,
   syncPendingIdeas,
 } from "./src/idea-sync";
@@ -87,6 +94,7 @@ import {
 } from "./src/sync-storage";
 import { LibraryRow } from "./src/components/LibraryRow";
 import { RenameDialog } from "./src/components/RenameDialog";
+import { MetadataDialog } from "./src/components/MetadataDialog";
 import { PairBridgeDialog } from "./src/components/PairBridgeDialog";
 import type { PairBridgeInput } from "./src/components/PairBridgeDialog";
 import {
@@ -163,6 +171,7 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<IdeaMetadata | null>(null);
+  const [metadataTarget, setMetadataTarget] = useState<IdeaMetadata | null>(null);
   const [storageBusyId, setStorageBusyId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<SyncEngineState>(UNPAIRED);
   const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
@@ -172,6 +181,12 @@ export default function App() {
   const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
   const syncInputsRef = useRef<SyncInputs | null>(null);
+  // Latest Library, so a sync pass merges Bridge edits into current state (not
+  // the snapshot it started with) without dropping Ideas captured meanwhile.
+  const libraryRef = useRef<IdeaMetadata[]>(library);
+  useEffect(() => {
+    libraryRef.current = library;
+  }, [library]);
 
   useEffect(() => {
     let active = true;
@@ -234,9 +249,31 @@ export default function App() {
     };
   }, []);
 
+  // Applies a reconciled Library from a metadata sync onto the *current* state,
+  // re-merging per Idea so a concurrent local edit or a just-captured Idea is
+  // never lost. Persists only when something actually changed.
+  const applyMergedMetadata = useCallback((merged: readonly IdeaMetadata[]) => {
+    const current = libraryRef.current;
+    const mergedById = new Map(merged.map((idea) => [idea.id, idea]));
+    let changed = false;
+    const next = current.map((idea) => {
+      const peer = mergedById.get(idea.id);
+      if (!peer) return idea;
+      const remerged = mergeIdea(idea, peer);
+      if (sameEditableMetadata(remerged, idea)) return idea;
+      changed = true;
+      return remerged;
+    });
+    if (!changed) return;
+    libraryRef.current = next;
+    saveLibrary(next);
+    setLibrary(next);
+  }, []);
+
   // Runs every path the tier allows. LAN remains preferred and independent:
   // a local failure never prevents a paid account from reaching cloud relay.
-  const runSync = useCallback(async (inputs: SyncInputs) => {
+  const runSync = useCallback(
+    async (inputs: SyncInputs) => {
     const transports = syncTransports(inputs.tier, inputs.bridge !== null);
     const readAudio = (idea: IdeaMetadata) =>
       readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
@@ -254,6 +291,15 @@ export default function App() {
           synced.length > 0
             ? `${synced.length} to ${inputs.bridge.displayName}`
             : `${inputs.bridge.displayName} up to date`,
+        );
+        // Metadata sync is bidirectional (ADR 0006): pull Bridge's edits, push
+        // ours. Kept separate from the audio offer path so it stays copy-safe.
+        applyMergedMetadata(
+          await syncMetadataWithBridge({
+            endpoint: inputs.bridge.endpoint,
+            capture: inputs.capture,
+            library: inputs.library,
+          }),
         );
       } catch {
         statuses.push(`${inputs.bridge.displayName} offline`);
@@ -275,7 +321,9 @@ export default function App() {
     }
 
     setSyncStatus(statuses.join(" · ") || null);
-  }, []);
+    },
+    [applyMergedMetadata],
+  );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
   useEffect(() => {
@@ -536,9 +584,41 @@ export default function App() {
     const name = normalizeIdeaName(rawName);
     // A blank name keeps the existing one — nothing to save.
     if (name === null || name === target.name) return;
-    const next = renameIdea(library, target.id, name);
+    const next = renameIdea(library, target.id, name, Date.now());
     saveLibrary(next);
     setLibrary(next);
+    pushMetadataEdit(next, target.id);
+  }
+
+  /**
+   * Sends the (possibly newly edited) Idea's metadata to Bridge right away so a
+   * paired desktop reflects it without waiting for the next interval reconcile.
+   * Best-effort: the periodic metadata sync is the fallback if Bridge is offline.
+   */
+  function pushMetadataEdit(nextLibrary: readonly IdeaMetadata[], id: string) {
+    const updated = nextLibrary.find((idea) => idea.id === id);
+    const bridge = syncState.pairedBridge;
+    if (!updated || !bridge || !captureIdentity) return;
+    void pushIdeaUpdate(bridge.endpoint, {
+      kind: "idea-metadata-update",
+      from: captureIdentity,
+      idea: updated,
+    }).catch(() => {
+      // A failed push is soft — the next reconcile re-sends the newer field.
+    });
+  }
+
+  function submitMetadata(edit: IdeaMetadataEdit) {
+    const target = metadataTarget;
+    setMetadataTarget(null);
+    if (!target) return;
+    const next = editIdea(library, target.id, edit, Date.now());
+    const updated = next.find((idea) => idea.id === target.id);
+    // Opening and saving the editor without touching anything is a no-op.
+    if (!updated || sameEditableMetadata(updated, target)) return;
+    saveLibrary(next);
+    setLibrary(next);
+    pushMetadataEdit(next, target.id);
   }
 
   async function handlePair(input: PairBridgeInput) {
@@ -644,6 +724,11 @@ export default function App() {
   }
 
   const visibleLibrary = searchLibrary(library, searchQuery);
+  const metadataSuggestions = {
+    tags: distinctFieldValues(library, "tags"),
+    instrument: distinctFieldValues(library, "instrument"),
+    style: distinctFieldValues(library, "style"),
+  };
 
   return (
     <View style={styles.container}>
@@ -768,6 +853,7 @@ export default function App() {
                 onShare={() => shareIdea(item)}
                 onStorageAction={() => handleIdeaStorageAction(item)}
                 onRename={() => setRenameTarget(item)}
+                onEditMetadata={() => setMetadataTarget(item)}
                 onDelete={() => confirmDelete(item)}
               />
             )}
@@ -780,6 +866,14 @@ export default function App() {
         initialName={renameTarget?.name ?? ""}
         onCancel={() => setRenameTarget(null)}
         onSubmit={submitRename}
+      />
+
+      <MetadataDialog
+        visible={metadataTarget !== null}
+        idea={metadataTarget}
+        suggestions={metadataSuggestions}
+        onCancel={() => setMetadataTarget(null)}
+        onSubmit={submitMetadata}
       />
 
       <PairBridgeDialog

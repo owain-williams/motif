@@ -1,6 +1,17 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { formatDuration, searchLibrary } from "@motif/shared";
-import type { IdeaMetadata } from "@motif/shared";
+import {
+  distinctFieldValues,
+  formatDuration,
+  ideaMetadataLabels,
+  normalizeMultiValue,
+  normalizeTempo,
+  searchLibrary,
+} from "@motif/shared";
+import type {
+  IdeaMetadata,
+  IdeaMetadataEdit,
+  MultiValueIdeaField,
+} from "@motif/shared";
 
 /**
  * Bridge frontend shell. Renders synced Ideas, previews their received audio,
@@ -24,6 +35,8 @@ const DRAG_ICON =
 let selectedIdeaId: string | null = null;
 let loadedLibrary: IdeaMetadata[] = [];
 let searchQuery = "";
+// The Idea whose metadata is open in the editor, or null when it's closed.
+let metadataTargetId: string | null = null;
 
 async function loadPairingInfo(): Promise<void> {
   const el = document.querySelector<HTMLParagraphElement>("#pairing");
@@ -119,6 +132,17 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
       duration.className = "idea-duration";
       duration.textContent = formatDuration(idea.durationMs);
 
+      const edit = document.createElement("button");
+      edit.className = "edit-handle";
+      edit.type = "button";
+      edit.title = "Edit tags, instrument, style, tempo";
+      edit.setAttribute("aria-label", `Edit metadata for ${idea.name}`);
+      edit.textContent = "Edit";
+      edit.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openMetadataEditor(idea.id);
+      });
+
       const drag = document.createElement("button");
       drag.className = "drag-handle";
       drag.type = "button";
@@ -139,10 +163,132 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
           void previewIdea(idea);
         }
       });
-      row.append(name, duration, drag);
+      row.append(name, duration, edit, drag);
+
+      const chips = metadataChips(idea);
+      if (chips) row.append(chips);
       return row;
     }),
   );
+}
+
+const MULTI_FIELDS: readonly MultiValueIdeaField[] = [
+  "tags",
+  "instrument",
+  "style",
+];
+
+/** A compact summary of an Idea's searchable metadata, or null when it has none. */
+function metadataChips(idea: IdeaMetadata): HTMLElement | null {
+  const labels = ideaMetadataLabels(idea);
+  if (labels.length === 0) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "library-chips";
+  wrap.append(
+    ...labels.map((label) => {
+      const chip = document.createElement("span");
+      chip.className = "library-chip";
+      chip.textContent = label;
+      return chip;
+    }),
+  );
+  return wrap;
+}
+
+function fieldInput(field: string): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>(`#edit-${field}`);
+}
+
+function readMultiValueInput(field: MultiValueIdeaField): string[] {
+  return normalizeMultiValue((fieldInput(field)?.value ?? "").split(","));
+}
+
+/**
+ * Renders the distinct values already used across the Library as clickable
+ * suggestions for one field, hiding ones already entered — the same
+ * autocomplete-from-distinct-values approach Capture uses (CONTEXT.md).
+ */
+function renderFieldSuggestions(field: MultiValueIdeaField): void {
+  const container = document.querySelector<HTMLDivElement>(
+    `#edit-${field}-suggestions`,
+  );
+  const input = fieldInput(field);
+  if (!container || !input) return;
+  const chosen = new Set(
+    readMultiValueInput(field).map((value) => value.toLocaleLowerCase()),
+  );
+  const suggestions = distinctFieldValues(loadedLibrary, field).filter(
+    (value) => !chosen.has(value.toLocaleLowerCase()),
+  );
+  container.replaceChildren(
+    ...suggestions.map((value) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "metadata-suggestion";
+      chip.textContent = value;
+      chip.addEventListener("click", () => {
+        input.value = normalizeMultiValue([
+          ...readMultiValueInput(field),
+          value,
+        ]).join(", ");
+        renderFieldSuggestions(field);
+      });
+      return chip;
+    }),
+  );
+}
+
+function openMetadataEditor(id: string): void {
+  const idea = loadedLibrary.find((entry) => entry.id === id);
+  const backdrop = document.querySelector<HTMLDivElement>("#metadata-backdrop");
+  if (!idea || !backdrop) return;
+  metadataTargetId = id;
+  const nameEl = document.querySelector<HTMLElement>("#metadata-idea-name");
+  if (nameEl) nameEl.textContent = idea.name;
+  const values: Record<string, string> = {
+    tags: idea.tags.join(", "),
+    instrument: idea.instrument.join(", "),
+    style: idea.style.join(", "),
+    tempo: idea.tempo === null ? "" : String(idea.tempo),
+  };
+  for (const [field, value] of Object.entries(values)) {
+    const input = fieldInput(field);
+    if (input) input.value = value;
+  }
+  MULTI_FIELDS.forEach(renderFieldSuggestions);
+  backdrop.hidden = false;
+  fieldInput("tags")?.focus();
+}
+
+function closeMetadataEditor(): void {
+  metadataTargetId = null;
+  const backdrop = document.querySelector<HTMLDivElement>("#metadata-backdrop");
+  if (backdrop) backdrop.hidden = true;
+}
+
+async function submitMetadataEditor(): Promise<void> {
+  const id = metadataTargetId;
+  const idea = loadedLibrary.find((entry) => entry.id === id);
+  if (!id || !idea) {
+    closeMetadataEditor();
+    return;
+  }
+  const edit: IdeaMetadataEdit = {
+    // Name isn't edited on Bridge; send the current value so it never re-stamps.
+    name: idea.name,
+    tags: readMultiValueInput("tags"),
+    instrument: readMultiValueInput("instrument"),
+    style: readMultiValueInput("style"),
+    tempo: normalizeTempo(fieldInput("tempo")?.value ?? ""),
+  };
+  closeMetadataEditor();
+  try {
+    await invoke("edit_idea", { id, edit });
+    // Reflect the edit locally right away; Capture picks it up on its next sync.
+    await refreshLibrary();
+  } catch (error) {
+    setHandoffStatus(`Could not save that Idea's metadata: ${String(error)}`, true);
+  }
 }
 
 async function loginForCloud(email: string, password: string): Promise<void> {
@@ -212,6 +358,24 @@ window.addEventListener("DOMContentLoaded", () => {
     const password = document.querySelector<HTMLInputElement>("#cloud-password")?.value ?? "";
     void loginForCloud(email, password);
   });
+  document.querySelector<HTMLFormElement>("#metadata-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitMetadataEditor();
+  });
+  document
+    .querySelector<HTMLButtonElement>("#metadata-cancel")
+    ?.addEventListener("click", () => closeMetadataEditor());
+  document
+    .querySelector<HTMLDivElement>("#metadata-backdrop")
+    ?.addEventListener("click", (event) => {
+      // A click on the backdrop itself (not the form) dismisses the editor.
+      if (event.target === event.currentTarget) closeMetadataEditor();
+    });
+  for (const field of MULTI_FIELDS) {
+    fieldInput(field)?.addEventListener("input", () =>
+      renderFieldSuggestions(field),
+    );
+  }
   document.querySelector<HTMLButtonElement>("#cloud-logout")?.addEventListener("click", () => {
     void invoke("disable_cloud_sync");
     const form = document.querySelector<HTMLFormElement>("#cloud-login");

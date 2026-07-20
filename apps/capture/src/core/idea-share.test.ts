@@ -25,6 +25,11 @@ function makeIdea(overrides: Partial<IdeaMetadata> = {}): IdeaMetadata {
     audioFormat: "aac",
     channels: 1,
     storageState: "on-device",
+    tags: [],
+    instrument: [],
+    style: [],
+    tempo: null,
+    fieldUpdatedAt: { name: 1_700_000_000_000, tags: 0, instrument: 0, style: 0, tempo: 0 },
     ...overrides,
   };
 }

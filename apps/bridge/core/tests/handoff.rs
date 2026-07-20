@@ -11,6 +11,11 @@ fn idea(format: AudioFormat) -> IdeaMetadata {
         audio_format: format,
         channels: 1,
         storage_state: IdeaStorageState::OnDevice,
+        tags: Vec::new(),
+        instrument: Vec::new(),
+        style: Vec::new(),
+        tempo: None,
+        field_updated_at: Default::default(),
     }
 }
 

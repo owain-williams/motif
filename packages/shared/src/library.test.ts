@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IdeaMetadata } from "./idea.js";
 import {
+  editIdea,
   formatDuration,
   insertIdea,
   normalizeIdeaName,
@@ -27,6 +28,17 @@ function idea(id: string, capturedAt: number, durationMs = 1000): IdeaMetadata {
     audioFormat: "aac",
     channels: 1,
     storageState: "on-device",
+    tags: [],
+    instrument: [],
+    style: [],
+    tempo: null,
+    fieldUpdatedAt: {
+      name: capturedAt,
+      tags: 0,
+      instrument: 0,
+      style: 0,
+      tempo: 0,
+    },
   };
 }
 
@@ -120,31 +132,49 @@ describe("insertIdea", () => {
 });
 
 describe("renameIdea", () => {
-  it("replaces the name of the matching Idea and nothing else", () => {
+  it("replaces the name of the matching Idea and stamps it", () => {
     const library = [idea("a", 2_000), idea("b", 1_000)];
-    const renamed = renameIdea(library, "b", "Chorus hook");
-    expect(renamed).toEqual([
-      idea("a", 2_000),
-      { ...idea("b", 1_000), name: "Chorus hook" },
-    ]);
+    const renamed = renameIdea(library, "b", "Chorus hook", 9_000);
+    expect(renamed[0]).toEqual(idea("a", 2_000));
+    expect(renamed[1]!.name).toBe("Chorus hook");
+    expect(renamed[1]!.fieldUpdatedAt.name).toBe(9_000);
+    // Nothing else about the Idea changes.
+    expect(renamed[1]!.tags).toEqual([]);
   });
 
   it("preserves Library order — a rename never reorders", () => {
     const library = [idea("a", 2_000), idea("b", 1_000)];
-    const renamed = renameIdea(library, "a", "Zzz last alphabetically");
+    const renamed = renameIdea(library, "a", "Zzz last alphabetically", 9_000);
     expect(renamed.map((entry) => entry.id)).toEqual(["a", "b"]);
   });
 
   it("leaves the Library untouched when no Idea matches", () => {
     const library = [idea("a", 2_000)];
-    expect(renameIdea(library, "missing", "New")).toEqual(library);
+    expect(renameIdea(library, "missing", "New", 9_000)).toEqual(library);
   });
 
   it("does not mutate the input array or its Ideas", () => {
     const library = [idea("a", 2_000)];
     const snapshot = structuredClone(library);
-    renameIdea(library, "a", "Changed");
+    renameIdea(library, "a", "Changed", 9_000);
     expect(library).toEqual(snapshot);
+  });
+});
+
+describe("editIdea", () => {
+  it("applies a multi-field edit to the matching Idea and stamps changes", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const edited = editIdea(
+      library,
+      "a",
+      { tags: ["dreamy"], tempo: 120 },
+      9_000,
+    );
+    expect(edited[0]!.tags).toEqual(["dreamy"]);
+    expect(edited[0]!.tempo).toBe(120);
+    expect(edited[0]!.fieldUpdatedAt.tags).toBe(9_000);
+    expect(edited[0]!.fieldUpdatedAt.tempo).toBe(9_000);
+    expect(edited[1]).toEqual(idea("b", 1_000));
   });
 });
 

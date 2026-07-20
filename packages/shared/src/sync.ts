@@ -69,12 +69,36 @@ export interface IdeaSyncAck {
   readonly accepted: boolean;
 }
 
+/**
+ * A metadata-only edit propagated to a paired peer. Unlike an offer this carries
+ * no audio — only the full updated {@link IdeaMetadata} (with its per-field
+ * timestamps) — and it flows in either direction: sync became bidirectional once
+ * Bridge could edit metadata too (ADR 0006). The receiver merges it into the
+ * Idea it already holds by per-field last-write-wins; an update for an Idea the
+ * receiver doesn't have is ignored (its audio never arrived).
+ */
+export interface IdeaMetadataUpdate {
+  readonly kind: "idea-metadata-update";
+  readonly from: DeviceIdentity;
+  readonly idea: IdeaMetadata;
+}
+
+/** Receiver's response to an {@link IdeaMetadataUpdate}. */
+export interface IdeaUpdateAck {
+  readonly kind: "idea-update-ack";
+  readonly ideaId: string;
+  /** True when the update was merged (the Idea was known and the peer trusted). */
+  readonly accepted: boolean;
+}
+
 export type SyncMessage =
   | PairingRequest
   | PairingResponse
   | SyncManifest
   | IdeaSyncOffer
-  | IdeaSyncAck;
+  | IdeaSyncAck
+  | IdeaMetadataUpdate
+  | IdeaUpdateAck;
 
 /** Current protocol version negotiated between Capture and Bridge. */
 export const SYNC_PROTOCOL_VERSION = 1 as const;

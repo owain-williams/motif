@@ -136,6 +136,11 @@ fn skips_ideas_bridge_already_received_over_the_local_network() {
         audio_format: bridge_core::AudioFormat::Aac,
         channels: 1,
         storage_state: bridge_core::IdeaStorageState::OnDevice,
+        tags: Vec::new(),
+        instrument: Vec::new(),
+        style: Vec::new(),
+        tempo: None,
+        field_updated_at: Default::default(),
     });
     let relay = FakeRelay {
         have: vec!["idea-1".into()],

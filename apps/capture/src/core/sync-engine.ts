@@ -1,3 +1,4 @@
+import { mergeIdea, sameEditableMetadata } from "@motif/shared";
 import type { IdeaMetadata, SyncTransportKind, Tier } from "@motif/shared";
 
 /**
@@ -99,4 +100,44 @@ export function ideasToOffer(
   return library
     .filter((idea) => idea.storageState === "on-device" && !have.has(idea.id))
     .sort((a, b) => a.capturedAt - b.capturedAt);
+}
+
+/** The outcome of reconciling local metadata against a peer's Library. */
+export interface MetadataReconciliation {
+  /** The local Library with each shared Idea merged per-field (ADR 0006). */
+  readonly merged: IdeaMetadata[];
+  /** Merged Ideas whose local metadata is newer than the peer's, to push back. */
+  readonly toPush: IdeaMetadata[];
+}
+
+/**
+ * Reconciles this device's metadata with a paired peer's Library snapshot,
+ * making metadata sync bidirectional. Every Idea both sides hold is merged by
+ * per-field last-write-wins, so the peer's newer edits land locally; any Idea
+ * whose local copy still carries a field newer than the peer's is collected in
+ * `toPush` so the caller can send it back. Ideas the peer doesn't have (not yet
+ * offered, or offloaded) are passed through unchanged — the audio-carrying offer
+ * path owns those. Pure: the inputs are never mutated.
+ */
+export function reconcileMetadata(
+  local: readonly IdeaMetadata[],
+  remote: readonly IdeaMetadata[],
+): MetadataReconciliation {
+  const remoteById = new Map(remote.map((idea) => [idea.id, idea]));
+  const merged: IdeaMetadata[] = [];
+  const toPush: IdeaMetadata[] = [];
+  for (const idea of local) {
+    const peer = remoteById.get(idea.id);
+    if (!peer) {
+      merged.push(idea);
+      continue;
+    }
+    const result = mergeIdea(idea, peer);
+    merged.push(result);
+    // If the merge left the peer behind on any field, the peer's copy is stale.
+    if (!sameEditableMetadata(result, peer)) {
+      toPush.push(result);
+    }
+  }
+  return { merged, toPush };
 }

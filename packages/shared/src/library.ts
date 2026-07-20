@@ -1,17 +1,21 @@
-import type { IdeaMetadata, IdeaStorageState } from "./idea.js";
+import { applyIdeaEdit } from "./idea.js";
+import type {
+  IdeaMetadata,
+  IdeaMetadataEdit,
+  IdeaStorageState,
+} from "./idea.js";
 
 /**
  * Library — the flat, reverse-chronological list of a user's Ideas shown in
- * both Capture and Bridge (CONTEXT.md). No folders or tags; ordering is purely
- * by capture time, newest first. These helpers keep that ordering and the
- * duration formatting device-independent so both app shells stay thin.
+ * both Capture and Bridge (CONTEXT.md). No folders; ordering is purely by
+ * capture time, newest first, though Ideas carry searchable metadata (tags,
+ * instrument, style, tempo, location). These helpers keep that ordering, search,
+ * and the duration formatting device-independent so both app shells stay thin.
  */
 
-interface SearchableIdeaFields {
-  readonly tags?: readonly string[];
-  readonly instrument?: readonly string[];
-  readonly style?: readonly string[];
-  readonly tempo?: number | null;
+/** Location isn't on {@link IdeaMetadata} yet (it lands with motif-kka.3), so
+ * search reads it defensively off whatever an Idea happens to carry. */
+interface LocatableIdea {
   readonly location?: { readonly label: string } | null;
 }
 
@@ -63,19 +67,18 @@ export function searchLibrary<T extends IdeaMetadata>(
     const minimum = Math.min(first, second);
     const maximum = Math.max(first, second);
     return library.filter((idea) => {
-      const tempo = (idea as T & SearchableIdeaFields).tempo;
-      return tempo !== null && tempo !== undefined && tempo >= minimum && tempo <= maximum;
+      const { tempo } = idea;
+      return tempo !== null && tempo >= minimum && tempo <= maximum;
     });
   }
 
   return library.filter((idea) => {
-    const searchable = idea as T & SearchableIdeaFields;
     const fields = [
       idea.name,
-      ...(searchable.tags ?? []),
-      ...(searchable.instrument ?? []),
-      ...(searchable.style ?? []),
-      searchable.location?.label ?? "",
+      ...idea.tags,
+      ...idea.instrument,
+      ...idea.style,
+      (idea as T & LocatableIdea).location?.label ?? "",
     ];
     return fields.some((field) => fuzzyTextMatch(field, query));
   });
@@ -102,17 +105,36 @@ export function insertIdea(
 }
 
 /**
+ * Applies an editable-metadata change to the matching Idea, stamping the changed
+ * fields at `editedAt` for last-write-wins sync (ADR 0006). Returns a new
+ * Library; order is unchanged (an edit never reorders). Non-matching Ideas and
+ * unchanged fields are left untouched.
+ */
+export function editIdea(
+  library: readonly IdeaMetadata[],
+  id: string,
+  edit: IdeaMetadataEdit,
+  editedAt: number,
+): IdeaMetadata[] {
+  return library.map((idea) =>
+    idea.id === id ? applyIdeaEdit(idea, edit, editedAt) : idea,
+  );
+}
+
+/**
  * Renames the matching Idea, returning a new Library. Order is unchanged — a
  * rename never reorders (the Library is sorted by capture time, not name). The
  * caller is expected to pass a name already validated via
- * {@link normalizeIdeaName}.
+ * {@link normalizeIdeaName}. Convenience wrapper over {@link editIdea} so the
+ * rename stamps the name field for merge like any other edit.
  */
 export function renameIdea(
   library: readonly IdeaMetadata[],
   id: string,
   name: string,
+  editedAt: number,
 ): IdeaMetadata[] {
-  return library.map((idea) => (idea.id === id ? { ...idea, name } : idea));
+  return editIdea(library, id, { name }, editedAt);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
-import type { IdeaMetadata } from "@motif/shared";
+import { withMetadataDefaults } from "@motif/shared";
+import type { IdeaMetadata, PersistedIdea } from "@motif/shared";
 import type { IdeaSharePlan } from "./core/idea-share";
 
 /**
@@ -165,7 +166,11 @@ export async function loadLibrary(): Promise<IdeaMetadata[]> {
   }
   const raw = await manifest.text();
   const parsed: unknown = JSON.parse(raw);
-  return Array.isArray(parsed) ? (parsed as IdeaMetadata[]) : [];
+  // Normalize so a Library written before the editable-metadata schema (tags,
+  // instrument, style, tempo, per-field timestamps) loads with sane defaults.
+  return Array.isArray(parsed)
+    ? (parsed as PersistedIdea[]).map(withMetadataDefaults)
+    : [];
 }
 
 /** Overwrites the persisted Library manifest with the given Ideas. */

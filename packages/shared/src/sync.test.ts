@@ -7,8 +7,10 @@ import {
   SYNC_PROTOCOL_VERSION,
 } from "./sync.js";
 import type {
+  IdeaMetadataUpdate,
   IdeaSyncAck,
   IdeaSyncOffer,
+  IdeaUpdateAck,
   PairingRequest,
   PairingResponse,
   SyncManifest,
@@ -32,6 +34,17 @@ function idea(id: string): IdeaMetadata {
     audioFormat: "aac",
     channels: 1,
     storageState: "on-device",
+    tags: [],
+    instrument: [],
+    style: [],
+    tempo: null,
+    fieldUpdatedAt: {
+      name: 1_700_000_000_000,
+      tags: 0,
+      instrument: 0,
+      style: 0,
+      tempo: 0,
+    },
   };
 }
 
@@ -99,14 +112,34 @@ describe("sync message shapes", () => {
       ideaId: "a",
       accepted: false,
     };
+    const update: IdeaMetadataUpdate = {
+      kind: "idea-metadata-update",
+      from,
+      idea: idea("a"),
+    };
+    const updateAck: IdeaUpdateAck = {
+      kind: "idea-update-ack",
+      ideaId: "a",
+      accepted: true,
+    };
 
-    const messages: SyncMessage[] = [pairReq, pairRes, manifest, offer, ack];
+    const messages: SyncMessage[] = [
+      pairReq,
+      pairRes,
+      manifest,
+      offer,
+      ack,
+      update,
+      updateAck,
+    ];
     expect(messages.map((m) => m.kind)).toEqual([
       "pairing-request",
       "pairing-response",
       "sync-manifest",
       "idea-sync-offer",
       "idea-sync-ack",
+      "idea-metadata-update",
+      "idea-update-ack",
     ]);
   });
 });

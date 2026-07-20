@@ -35,6 +35,11 @@ fn idea(id: &str, captured_at: i64) -> IdeaMetadata {
         audio_format: AudioFormat::Aac,
         channels: 1,
         storage_state: OnDevice,
+        tags: Vec::new(),
+        instrument: Vec::new(),
+        style: Vec::new(),
+        tempo: None,
+        field_updated_at: Default::default(),
     }
 }
 

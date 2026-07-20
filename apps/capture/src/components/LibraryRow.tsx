@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { formatDuration } from "@motif/shared";
+import { formatDuration, ideaMetadataLabels } from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
 import type { IdeaStorageAction } from "../core/sync-engine";
 import { ideaWaveform } from "../core/idea-waveform";
@@ -21,6 +21,7 @@ export function LibraryRow({
   onShare,
   onStorageAction,
   onRename,
+  onEditMetadata,
   onDelete,
 }: {
   idea: IdeaMetadata;
@@ -32,12 +33,15 @@ export function LibraryRow({
   onShare: () => void;
   onStorageAction: () => void;
   onRename: () => void;
+  onEditMetadata: () => void;
   onDelete: () => void;
 }) {
   const bars = useMemo(
     () => ideaWaveform(idea.id, waveformPeaks),
     [idea.id, waveformPeaks],
   );
+
+  const metadataSummary = useMemo(() => ideaMetadataLabels(idea), [idea]);
 
   return (
     <Pressable
@@ -62,6 +66,18 @@ export function LibraryRow({
       </View>
 
       <Waveform bars={bars} color={isPlaying ? "#e5484d" : "#3a3a44"} />
+
+      {metadataSummary.length > 0 ? (
+        <View style={styles.chips}>
+          {metadataSummary.map((label, index) => (
+            <View key={`${label}-${index}`} style={styles.chip}>
+              <Text style={styles.chipText} numberOfLines={1}>
+                {label}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       <View style={styles.actions}>
         {idea.storageState === "on-device" ? (
@@ -99,6 +115,16 @@ export function LibraryRow({
           style={styles.action}
         >
           <Text style={styles.actionLabel}>Rename</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Edit tags for ${idea.name}`}
+          disabled={disabled}
+          onPress={onEditMetadata}
+          hitSlop={8}
+          style={styles.action}
+        >
+          <Text style={styles.actionLabel}>Tags</Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -143,6 +169,23 @@ const styles = StyleSheet.create({
     color: "#8a8a92",
     fontSize: 14,
     fontVariant: ["tabular-nums"],
+  },
+  chips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 10,
+  },
+  chip: {
+    backgroundColor: "#20202a",
+    borderRadius: 12,
+    paddingVertical: 3,
+    paddingHorizontal: 10,
+    maxWidth: "100%",
+  },
+  chipText: {
+    color: "#b9b9c4",
+    fontSize: 12,
   },
   actions: {
     flexDirection: "row",

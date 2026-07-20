@@ -5,6 +5,7 @@ import {
   ideasToOffer,
   isPaired,
   pairWithBridge,
+  reconcileMetadata,
   syncTransports,
   UNPAIRED,
   unpair,
@@ -31,6 +32,17 @@ function idea(
     audioFormat: "aac",
     channels: 1,
     storageState: "on-device",
+    tags: [],
+    instrument: [],
+    style: [],
+    tempo: null,
+    fieldUpdatedAt: {
+      name: capturedAt,
+      tags: 0,
+      instrument: 0,
+      style: 0,
+      tempo: 0,
+    },
     ...overrides,
   };
 }
@@ -157,5 +169,54 @@ describe("ideasToOffer — the copy-semantics sync diff", () => {
     const snapshot = library.map((i) => i.id);
     ideasToOffer(library, []);
     expect(library.map((i) => i.id)).toEqual(snapshot);
+  });
+});
+
+describe("reconcileMetadata — bidirectional metadata sync", () => {
+  const stamps = (over: Partial<IdeaMetadata["fieldUpdatedAt"]>) => ({
+    name: 0,
+    tags: 0,
+    instrument: 0,
+    style: 0,
+    tempo: 0,
+    ...over,
+  });
+
+  it("merges a peer's newer edit into the local Idea", () => {
+    const local = idea("a", 1, { tags: ["mine"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const remote = idea("a", 1, { tags: ["theirs"], fieldUpdatedAt: stamps({ tags: 200 }) });
+    const { merged, toPush } = reconcileMetadata([local], [remote]);
+    expect(merged[0].tags).toEqual(["theirs"]);
+    // The peer is already ahead, so nothing to push back.
+    expect(toPush).toEqual([]);
+  });
+
+  it("collects Ideas whose local edit is newer than the peer's to push back", () => {
+    const local = idea("a", 1, { tags: ["mine"], fieldUpdatedAt: stamps({ tags: 300 }) });
+    const remote = idea("a", 1, { tags: ["stale"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const { merged, toPush } = reconcileMetadata([local], [remote]);
+    expect(merged[0].tags).toEqual(["mine"]);
+    expect(toPush.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("passes through local Ideas the peer does not hold, without pushing them", () => {
+    const local = idea("only-local", 1, { tags: ["x"], fieldUpdatedAt: stamps({ tags: 300 }) });
+    const { merged, toPush } = reconcileMetadata([local], []);
+    expect(merged).toEqual([local]);
+    expect(toPush).toEqual([]);
+  });
+
+  it("does not push when both sides already agree", () => {
+    const shared = idea("a", 1, { tags: ["same"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const { toPush } = reconcileMetadata([shared], [{ ...shared }]);
+    expect(toPush).toEqual([]);
+  });
+
+  it("does not mutate the local Library", () => {
+    const local = idea("a", 1, { tags: ["mine"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const remote = idea("a", 1, { tags: ["theirs"], fieldUpdatedAt: stamps({ tags: 200 }) });
+    const snapshot = structuredClone(local);
+    reconcileMetadata([local], [remote]);
+    expect(local).toEqual(snapshot);
   });
 });

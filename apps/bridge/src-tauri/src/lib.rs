@@ -14,7 +14,7 @@ use bridge_core::discovery::BridgeAdvertisement;
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
-    DeviceRole, HandoffPlan, IdeaMetadata, PairingState, PairingStatus, SyncState,
+    DeviceRole, HandoffPlan, IdeaMetadata, IdeaMetadataEdit, PairingState, PairingStatus, SyncState,
     PAIRING_CODE_LENGTH,
 };
 use tauri::{Manager, State};
@@ -34,10 +34,20 @@ const CLOUD_API_URL: &str = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.
 struct BridgeState {
     sync: Arc<Mutex<SyncState>>,
     data_dir: PathBuf,
+    manifest_path: PathBuf,
     pairing_path: PathBuf,
     cloud_token: Arc<Mutex<Option<String>>>,
     // Keeping the daemon alive keeps this Bridge advertised over Bonjour.
     _discovery: Option<BridgeAdvertisement>,
+}
+
+/// Writes the Library manifest to disk. The single place that serializes it, so
+/// the sync sink and the `edit_idea` command persist byte-identically. Best
+/// effort: a failed write leaves the in-memory Library authoritative.
+fn write_library_manifest(manifest_path: &Path, library: &BridgeLibrary) {
+    if let Ok(json) = serde_json::to_vec(library.ideas()) {
+        let _ = fs::write(manifest_path, json);
+    }
 }
 
 /// Writes received Ideas to the app data directory: audio at `ideas/<id><ext>`
@@ -58,9 +68,7 @@ impl SyncSink for FsSink {
     }
 
     fn persist_library(&self, library: &BridgeLibrary) {
-        if let Ok(json) = serde_json::to_vec(library.ideas()) {
-            let _ = fs::write(&self.manifest_path, json);
-        }
+        write_library_manifest(&self.manifest_path, library);
     }
 
     fn persist_pairing(&self, pairing: &PairingState) {
@@ -108,6 +116,15 @@ fn unix_timestamp_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Epoch milliseconds — the unit `@motif/shared` stamps edits with (`Date.now()`),
+/// so a Bridge edit orders correctly against Capture edits in a merge (ADR 0006).
+fn unix_timestamp_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn bridge_identity() -> DeviceIdentity {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -131,6 +148,30 @@ fn protocol_version() -> u32 {
 #[tauri::command]
 fn library(state: State<'_, BridgeState>) -> Vec<IdeaMetadata> {
     state.sync.lock().unwrap().library().ideas().to_vec()
+}
+
+/// Applies a metadata edit made in Bridge's UI to the held Idea and persists the
+/// Library. The returned Idea is stamped for last-write-wins merge (ADR 0006);
+/// Capture pulls it on its next sync via `GET /motif/library`, so the edit
+/// propagates back to the phone.
+#[tauri::command]
+fn edit_idea(
+    id: String,
+    edit: IdeaMetadataEdit,
+    state: State<'_, BridgeState>,
+) -> Result<IdeaMetadata, String> {
+    let now = unix_timestamp_millis();
+    let mut sync = state
+        .sync
+        .lock()
+        .map_err(|_| "Library unavailable".to_string())?;
+    let updated = sync
+        .edit_idea(&id, &edit, now)
+        .ok_or_else(|| "Idea not found".to_string())?;
+    // Same manifest the sync sink writes, so a UI edit and a synced Idea persist
+    // through one path (Capture pulls the edit on its next sync).
+    write_library_manifest(&state.manifest_path, sync.library());
+    Ok(updated)
 }
 
 /// The active pairing code, expiry, and any brute-force cooldown. Reading an
@@ -294,6 +335,7 @@ pub fn run() {
             app.manage(BridgeState {
                 sync,
                 data_dir,
+                manifest_path,
                 pairing_path,
                 cloud_token,
                 _discovery: discovery,
@@ -303,6 +345,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             protocol_version,
             library,
+            edit_idea,
             pairing_info,
             enable_cloud_sync,
             disable_cloud_sync,
