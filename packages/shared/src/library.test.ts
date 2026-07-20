@@ -6,6 +6,7 @@ import {
   normalizeIdeaName,
   removeIdea,
   renameIdea,
+  searchLibrary,
   setIdeaStorageState,
   sortLibrary,
 } from "./library.js";
@@ -28,6 +29,53 @@ function idea(id: string, capturedAt: number, durationMs = 1000): IdeaMetadata {
     storageState: "on-device",
   };
 }
+
+describe("searchLibrary", () => {
+  it("matches text across an Idea's name and searchable metadata", () => {
+    const named = { ...idea("named", 6_000), name: "Chorus hook" };
+    const tagged = { ...idea("tagged", 5_000), tags: ["dreamy"] };
+    const instrument = { ...idea("instrument", 4_000), instrument: ["guitar"] };
+    const style = { ...idea("style", 3_000), style: ["shoegaze"] };
+    const located = {
+      ...idea("located", 2_000),
+      location: { lat: 51.5, lon: -0.1, label: "London studio" },
+    };
+    const unmatched = idea("unmatched", 1_000);
+    const library = [named, tagged, instrument, style, located, unmatched];
+
+    expect(searchLibrary(library, "HOOK")).toEqual([named]);
+    expect(searchLibrary(library, "dream")).toEqual([tagged]);
+    expect(searchLibrary(library, "guitar")).toEqual([instrument]);
+    expect(searchLibrary(library, "shoe")).toEqual([style]);
+    expect(searchLibrary(library, "london")).toEqual([located]);
+  });
+
+  it("finds a tag when the query contains a small typo", () => {
+    const guitar = { ...idea("guitar", 2_000), tags: ["guitar"] };
+    const piano = { ...idea("piano", 1_000), tags: ["piano"] };
+
+    expect(searchLibrary([guitar, piano], "gitar")).toEqual([guitar]);
+  });
+
+  it("treats numeric queries as exact tempos or inclusive tempo ranges", () => {
+    const slow = { ...idea("slow", 4_000), tempo: 90 };
+    const inRange = { ...idea("in-range", 3_000), tempo: 120 };
+    const upperBound = { ...idea("upper", 2_000), tempo: 130 };
+    const textOnly = { ...idea("text", 1_000), name: "120 sketches", tempo: null };
+    const library = [slow, inRange, upperBound, textOnly];
+
+    expect(searchLibrary(library, "120")).toEqual([inRange]);
+    expect(searchLibrary(library, " 100 - 130 ")).toEqual([inRange, upperBound]);
+  });
+
+  it("returns the whole Library for a blank query without mutating it", () => {
+    const library = [idea("a", 2_000), idea("b", 1_000)];
+    const result = searchLibrary(library, "   ");
+
+    expect(result).toEqual(library);
+    expect(result).not.toBe(library);
+  });
+});
 
 describe("sortLibrary", () => {
   it("orders Ideas newest first by capture time", () => {

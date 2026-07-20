@@ -99,6 +99,27 @@ h1 {
   margin: 0;
 }
 
+.library-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #2c2c35;
+  border-radius: 10px;
+  background: #16161c;
+  color: #f5f5f7;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+}
+
+.library-search:focus {
+  border-color: #6f68ff;
+  outline: none;
+}
+
+.library-search::placeholder {
+  color: #686872;
+}
+
 .empty {
   color: #5a5a62;
   font-size: 14px;

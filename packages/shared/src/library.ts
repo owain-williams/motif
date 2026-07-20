@@ -7,6 +7,80 @@ import type { IdeaMetadata, IdeaStorageState } from "./idea.js";
  * duration formatting device-independent so both app shells stay thin.
  */
 
+interface SearchableIdeaFields {
+  readonly tags?: readonly string[];
+  readonly instrument?: readonly string[];
+  readonly style?: readonly string[];
+  readonly tempo?: number | null;
+  readonly location?: { readonly label: string } | null;
+}
+
+function editDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1]! + 1,
+        previous[rightIndex]! + 1,
+        previous[rightIndex - 1]! +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
+}
+
+function fuzzyTextMatch(text: string, query: string): boolean {
+  const normalized = text.toLocaleLowerCase();
+  if (normalized.includes(query)) return true;
+  if (query.length < 4) return false;
+
+  const tolerance = query.length >= 9 ? 2 : 1;
+  const words = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return words.some((word) => editDistance(word, query) <= tolerance);
+}
+
+/**
+ * Narrows a Library using one free-text query across an Idea's searchable
+ * metadata. Matching is case-insensitive, tolerates small typos, and leaves
+ * Library order unchanged.
+ */
+export function searchLibrary<T extends IdeaMetadata>(
+  library: readonly T[],
+  rawQuery: string,
+): T[] {
+  const query = rawQuery.trim().toLocaleLowerCase();
+  if (query.length === 0) return [...library];
+
+  const tempoQuery = query.match(
+    /^(\d+(?:\.\d+)?)\s*(?:[-–—]\s*(\d+(?:\.\d+)?))?$/,
+  );
+  if (tempoQuery) {
+    const first = Number(tempoQuery[1]);
+    const second = tempoQuery[2] === undefined ? first : Number(tempoQuery[2]);
+    const minimum = Math.min(first, second);
+    const maximum = Math.max(first, second);
+    return library.filter((idea) => {
+      const tempo = (idea as T & SearchableIdeaFields).tempo;
+      return tempo !== null && tempo !== undefined && tempo >= minimum && tempo <= maximum;
+    });
+  }
+
+  return library.filter((idea) => {
+    const searchable = idea as T & SearchableIdeaFields;
+    const fields = [
+      idea.name,
+      ...(searchable.tags ?? []),
+      ...(searchable.instrument ?? []),
+      ...(searchable.style ?? []),
+      searchable.location?.label ?? "",
+    ];
+    return fields.some((field) => fuzzyTextMatch(field, query));
+  });
+}
+
 /**
  * Returns a new array of Ideas ordered newest first by capture time. Stable:
  * Ideas captured at the same instant keep their input order.

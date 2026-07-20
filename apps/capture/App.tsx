@@ -6,6 +6,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -29,6 +30,7 @@ import {
   removeIdea,
   renameIdea,
   recordingProfile,
+  searchLibrary,
   setIdeaStorageState,
   SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
@@ -154,6 +156,7 @@ export default function App() {
   const playerStatus = useAudioPlayerStatus(player);
 
   const [library, setLibrary] = useState<IdeaMetadata[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [waveforms, setWaveforms] = useState<Record<string, readonly number[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
@@ -640,6 +643,8 @@ export default function App() {
     ]);
   }
 
+  const visibleLibrary = searchLibrary(library, searchQuery);
+
   return (
     <View style={styles.container}>
       <Text style={styles.brand}>Motif</Text>
@@ -731,13 +736,25 @@ export default function App() {
 
       <View style={styles.library}>
         <Text style={styles.libraryHeading}>Library</Text>
+        <TextInput
+          accessibilityLabel="Search Library"
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Search name, tags, instrument, style, tempo, location"
+          placeholderTextColor="#686872"
+          returnKeyType="search"
+          autoCorrect={false}
+          style={styles.searchInput}
+        />
         {isLoading ? (
           <ActivityIndicator color="#8a8a92" style={styles.libraryLoading} />
         ) : library.length === 0 ? (
           <Text style={styles.empty}>No ideas yet. Tap the button to record one.</Text>
+        ) : visibleLibrary.length === 0 ? (
+          <Text style={styles.empty}>No ideas match your search.</Text>
         ) : (
           <FlatList
-            data={library}
+            data={visibleLibrary}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => (
@@ -924,6 +941,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     marginBottom: 8,
+  },
+  searchInput: {
+    color: "#f5f5f7",
+    backgroundColor: "#16161c",
+    borderWidth: 1,
+    borderColor: "#2c2c35",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    fontSize: 14,
   },
   libraryLoading: {
     marginTop: 24,

@@ -1,5 +1,5 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { formatDuration } from "@motif/shared";
+import { formatDuration, searchLibrary } from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
 
 /**
@@ -22,6 +22,8 @@ const API_URL = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
 const DRAG_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAAAKUlEQVR4nO3OMQEAAAgDINc/9K3hHFQgE1mZmZmZmZmZmZmZmZmZmZk9uwFmhQJBsT+YVAAAAABJRU5ErkJggg==";
 let selectedIdeaId: string | null = null;
+let loadedLibrary: IdeaMetadata[] = [];
+let searchQuery = "";
 
 async function loadPairingInfo(): Promise<void> {
   const el = document.querySelector<HTMLParagraphElement>("#pairing");
@@ -95,6 +97,10 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
   const empty = document.querySelector<HTMLParagraphElement>("#empty");
   if (!list || !empty) return;
   empty.hidden = ideas.length > 0;
+  empty.textContent =
+    loadedLibrary.length > 0 && searchQuery.trim().length > 0
+      ? "No Ideas match your search."
+      : "Waiting for an Idea to sync from your phone…";
   list.replaceChildren(
     ...ideas.map((idea) => {
       const row = document.createElement("li");
@@ -188,14 +194,18 @@ async function loginForCloud(email: string, password: string): Promise<void> {
 
 async function refreshLibrary(): Promise<void> {
   try {
-    const ideas = await invoke<IdeaMetadata[]>("library");
-    renderLibrary(ideas);
+    loadedLibrary = await invoke<IdeaMetadata[]>("library");
+    renderLibrary(searchLibrary(loadedLibrary, searchQuery));
   } catch {
     // A transient command failure just means we keep the last render.
   }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  document.querySelector<HTMLInputElement>("#library-search")?.addEventListener("input", (event) => {
+    searchQuery = (event.currentTarget as HTMLInputElement).value;
+    renderLibrary(searchLibrary(loadedLibrary, searchQuery));
+  });
   document.querySelector<HTMLFormElement>("#cloud-login")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const email = document.querySelector<HTMLInputElement>("#cloud-email")?.value ?? "";
