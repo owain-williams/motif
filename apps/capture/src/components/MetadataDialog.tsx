@@ -10,16 +10,26 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { normalizeMultiValue, normalizeTempo } from "@motif/shared";
-import type { IdeaMetadata, IdeaMetadataEdit } from "@motif/shared";
+import {
+  formatCoordinates,
+  normalizeMultiValue,
+  normalizeTempo,
+} from "@motif/shared";
+import type {
+  IdeaLocation,
+  IdeaMetadata,
+  IdeaMetadataEdit,
+} from "@motif/shared";
 
 /**
- * Edits an Idea's searchable metadata — tags, instrument, style, and tempo.
- * Tags/instrument/style are the same zero-or-many free-text shape (CONTEXT.md),
- * each entered as removable chips with autocomplete drawn from the distinct
- * values already used across the Library (`suggestions`). All the merge/stamp
- * logic lives in `@motif/shared`; this dialog only gathers input and hands the
- * parent a normalized {@link IdeaMetadataEdit}.
+ * Edits an Idea's searchable metadata — tags, instrument, style, tempo, and
+ * location. Tags/instrument/style are the same zero-or-many free-text shape
+ * (CONTEXT.md), each entered as removable chips with autocomplete drawn from the
+ * distinct values already used across the Library (`suggestions`). Location is
+ * captured on the device (opt-in, motif-kka.3); here its place label is editable
+ * and the whole location tag removable. All the merge/stamp logic lives in
+ * `@motif/shared`; this dialog only gathers input and hands the parent a
+ * normalized {@link IdeaMetadataEdit}.
  */
 export interface MetadataSuggestions {
   readonly tags: readonly string[];
@@ -130,6 +140,7 @@ export function MetadataDialog({
   const [instrument, setInstrument] = useState<string[]>([]);
   const [style, setStyle] = useState<string[]>([]);
   const [tempo, setTempo] = useState("");
+  const [location, setLocation] = useState<IdeaLocation | null>(null);
 
   // Re-seed each time the dialog opens for a different Idea.
   useEffect(() => {
@@ -138,6 +149,7 @@ export function MetadataDialog({
     setInstrument([...idea.instrument]);
     setStyle([...idea.style]);
     setTempo(idea.tempo === null ? "" : String(idea.tempo));
+    setLocation(idea.location);
   }, [visible, idea]);
 
   function submit() {
@@ -146,6 +158,13 @@ export function MetadataDialog({
       instrument: normalizeMultiValue(instrument),
       style: normalizeMultiValue(style),
       tempo: normalizeTempo(tempo),
+      // Coordinates stay fixed on either device; only the label is editable and
+      // the whole location tag removable. Send the desired state so an unchanged
+      // location never re-stamps (the shared merge compares before stamping).
+      location:
+        location === null
+          ? null
+          : { ...location, label: location.label.trim() },
     });
   }
 
@@ -193,6 +212,33 @@ export function MetadataDialog({
                 returnKeyType="done"
               />
             </View>
+            {location !== null ? (
+              <View style={styles.field}>
+                <Text style={styles.label}>Location</Text>
+                <TextInput
+                  style={styles.input}
+                  value={location.label}
+                  onChangeText={(text) =>
+                    setLocation({ ...location, label: text })
+                  }
+                  placeholder="Place label"
+                  placeholderTextColor="#5a5a62"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                />
+                <View style={styles.locationMeta}>
+                  <Text style={styles.coords}>{formatCoordinates(location)}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove location"
+                    onPress={() => setLocation(null)}
+                    style={styles.removeLocation}
+                  >
+                    <Text style={styles.removeLocationText}>Remove</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
           </ScrollView>
           <View style={styles.actions}>
             <Pressable
@@ -271,6 +317,28 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#2a2a32",
+  },
+  locationMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+  },
+  coords: {
+    color: "#686872",
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+  },
+  removeLocation: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#2a2a32",
+  },
+  removeLocationText: {
+    color: "#e5808a",
+    fontSize: 13,
+    fontWeight: "600",
   },
   suggestions: {
     flexDirection: "row",

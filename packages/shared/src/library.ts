@@ -13,12 +13,6 @@ import type {
  * and the duration formatting device-independent so both app shells stay thin.
  */
 
-/** Location isn't on {@link IdeaMetadata} yet (it lands with motif-kka.3), so
- * search reads it defensively off whatever an Idea happens to carry. */
-interface LocatableIdea {
-  readonly location?: { readonly label: string } | null;
-}
-
 function editDistance(left: string, right: string): number {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
@@ -78,7 +72,7 @@ export function searchLibrary<T extends IdeaMetadata>(
       ...idea.tags,
       ...idea.instrument,
       ...idea.style,
-      (idea as T & LocatableIdea).location?.label ?? "",
+      idea.location?.label ?? "",
     ];
     return fields.some((field) => fuzzyTextMatch(field, query));
   });

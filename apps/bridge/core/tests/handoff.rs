@@ -15,6 +15,7 @@ fn idea(format: AudioFormat) -> IdeaMetadata {
         instrument: Vec::new(),
         style: Vec::new(),
         tempo: None,
+        location: None,
         field_updated_at: Default::default(),
     }
 }

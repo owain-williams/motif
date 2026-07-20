@@ -66,6 +66,15 @@
         <label class="metadata-label" for="edit-tempo">Tempo (BPM)</label>
         <input id="edit-tempo" class="metadata-input" type="number" min="1" step="1" placeholder="e.g. 120" />
 
+        <div id="edit-location-group" class="metadata-location" hidden>
+          <label class="metadata-label" for="edit-location-label">Location</label>
+          <input id="edit-location-label" class="metadata-input" type="text" placeholder="Place label" autocomplete="off" />
+          <div class="metadata-location-meta">
+            <span id="edit-location-coords" class="metadata-coords"></span>
+            <button type="button" id="edit-location-remove" class="metadata-location-remove">Remove</button>
+          </div>
+        </div>
+
         <div class="metadata-actions">
           <button type="button" id="metadata-cancel" class="metadata-cancel">Cancel</button>
           <button type="submit" class="metadata-save">Save</button>

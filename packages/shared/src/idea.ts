@@ -12,10 +12,15 @@ export type IdeaStorageState = "on-device" | "offloaded";
  * The Idea metadata fields a user can edit on either device. Each carries its
  * own last-edit timestamp so bidirectional sync merges them independently by
  * last-write-wins (ADR 0006) — a stale edit to one field never clobbers a newer
- * edit to a different field. `location` is intentionally not here yet; its
- * editing lands with geotagging (motif-kka.3).
+ * edit to a different field.
  */
-export type EditableIdeaField = "name" | "tags" | "instrument" | "style" | "tempo";
+export type EditableIdeaField =
+  | "name"
+  | "tags"
+  | "instrument"
+  | "style"
+  | "tempo"
+  | "location";
 
 /** The editable fields, in a fixed order for merge/equality iteration. */
 export const EDITABLE_IDEA_FIELDS: readonly EditableIdeaField[] = [
@@ -24,7 +29,24 @@ export const EDITABLE_IDEA_FIELDS: readonly EditableIdeaField[] = [
   "instrument",
   "style",
   "tempo",
+  "location",
 ];
+
+/**
+ * Where an Idea was recorded (motif-kka.3). Captured opt-in on Capture from the
+ * device's last-known position and reverse-geocoded to a place `label`; when
+ * geocoding is unavailable the coordinates are kept with an empty `label`.
+ * Editable and removable on either device, syncing per-field like the other
+ * metadata (ADR 0006).
+ */
+export interface IdeaLocation {
+  /** Latitude in decimal degrees. */
+  readonly lat: number;
+  /** Longitude in decimal degrees. */
+  readonly lon: number;
+  /** Reverse-geocoded place label, or `""` when none could be resolved. */
+  readonly label: string;
+}
 
 /** Editable fields that hold zero-or-many free-text values with autocomplete. */
 export type MultiValueIdeaField = "tags" | "instrument" | "style";
@@ -54,6 +76,8 @@ export interface IdeaMetadata {
   readonly style: readonly string[];
   /** Tempo in BPM, or `null` when unset. */
   readonly tempo: number | null;
+  /** Where the recording was made, or `null` when untagged (motif-kka.3). */
+  readonly location: IdeaLocation | null;
   /** Per-field last-edit timestamps driving last-write-wins merges (ADR 0006). */
   readonly fieldUpdatedAt: IdeaFieldTimestamps;
 }
@@ -108,6 +132,7 @@ export function createIdea(input: NewIdeaInput): IdeaMetadata {
     instrument: [],
     style: [],
     tempo: null,
+    location: null,
     // The name is "set" at capture, so a later rename (with a larger timestamp)
     // wins the merge; the other fields start unedited (0) so any edit wins.
     fieldUpdatedAt: {
@@ -116,6 +141,7 @@ export function createIdea(input: NewIdeaInput): IdeaMetadata {
       instrument: 0,
       style: 0,
       tempo: 0,
+      location: 0,
     },
   };
 }
@@ -127,10 +153,10 @@ export function createIdea(input: NewIdeaInput): IdeaMetadata {
  */
 export type PersistedIdea = Omit<
   IdeaMetadata,
-  "tags" | "instrument" | "style" | "tempo" | "fieldUpdatedAt"
+  "tags" | "instrument" | "style" | "tempo" | "location" | "fieldUpdatedAt"
 > &
   Partial<
-    Pick<IdeaMetadata, "tags" | "instrument" | "style" | "tempo">
+    Pick<IdeaMetadata, "tags" | "instrument" | "style" | "tempo" | "location">
   > & { readonly fieldUpdatedAt?: Partial<IdeaFieldTimestamps> };
 
 /**
@@ -153,12 +179,14 @@ export function withMetadataDefaults(raw: PersistedIdea): IdeaMetadata {
     instrument: raw.instrument ?? [],
     style: raw.style ?? [],
     tempo: raw.tempo ?? null,
+    location: raw.location ?? null,
     fieldUpdatedAt: {
       name: raw.fieldUpdatedAt?.name ?? raw.capturedAt,
       tags: raw.fieldUpdatedAt?.tags ?? 0,
       instrument: raw.fieldUpdatedAt?.instrument ?? 0,
       style: raw.fieldUpdatedAt?.style ?? 0,
       tempo: raw.fieldUpdatedAt?.tempo ?? 0,
+      location: raw.fieldUpdatedAt?.location ?? 0,
     },
   };
 }
@@ -170,10 +198,17 @@ export interface IdeaMetadataEdit {
   readonly instrument?: readonly string[];
   readonly style?: readonly string[];
   readonly tempo?: number | null;
+  readonly location?: IdeaLocation | null;
 }
 
 function multiValueEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** Whether two Idea locations are equivalent (both unset counts as equal). */
+function locationEqual(a: IdeaLocation | null, b: IdeaLocation | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.lat === b.lat && a.lon === b.lon && a.label === b.label;
 }
 
 /** Whether an editable field's value differs between two Ideas. */
@@ -187,6 +222,8 @@ function fieldValueEqual(
       return a.name === b.name;
     case "tempo":
       return a.tempo === b.tempo;
+    case "location":
+      return locationEqual(a.location, b.location);
     default:
       return multiValueEqual(a[field], b[field]);
   }
@@ -212,12 +249,14 @@ export function applyIdeaEdit(
     instrument: edit.instrument ?? idea.instrument,
     style: edit.style ?? idea.style,
     tempo: edit.tempo === undefined ? idea.tempo : edit.tempo,
+    location: edit.location === undefined ? idea.location : edit.location,
   };
   for (const field of EDITABLE_IDEA_FIELDS) {
     if (edit[field] === undefined) continue;
     if (fieldValueEqual(field, candidate, idea)) continue;
     if (field === "name") next.name = candidate.name;
     else if (field === "tempo") next.tempo = candidate.tempo;
+    else if (field === "location") next.location = candidate.location;
     else next[field] = candidate[field];
     next.fieldUpdatedAt[field] = editedAt;
   }
@@ -241,6 +280,7 @@ export function mergeIdea(
     if (incoming.fieldUpdatedAt[field] > local.fieldUpdatedAt[field]) {
       if (field === "name") merged.name = incoming.name;
       else if (field === "tempo") merged.tempo = incoming.tempo;
+      else if (field === "location") merged.location = incoming.location;
       else merged[field] = incoming[field];
       merged.fieldUpdatedAt[field] = incoming.fieldUpdatedAt[field];
     }
@@ -288,14 +328,33 @@ export function normalizeTempo(raw: string): number | null {
   return Math.round(value);
 }
 
+/** A location's coordinates as a compact, rounded `lat, lon` display string. */
+export function formatCoordinates(location: IdeaLocation): string {
+  return `${location.lat.toFixed(3)}, ${location.lon.toFixed(3)}`;
+}
+
+/**
+ * A short display string for an Idea's location, or `null` when untagged. Uses
+ * the reverse-geocoded place label when present, else falls back to the
+ * coordinates so a location with no resolvable label is still viewable.
+ */
+export function formatLocationLabel(location: IdeaLocation | null): string | null {
+  if (location === null) return null;
+  const label = location.label.trim();
+  return label.length > 0 ? label : formatCoordinates(location);
+}
+
 /**
  * The human-readable metadata labels shown on a Library row — the multi-value
- * fields followed by a `BPM`-suffixed tempo. Shared so Capture and Bridge render
- * an Idea's metadata identically rather than each deriving the list.
+ * fields, a `BPM`-suffixed tempo, then a pin-prefixed location. Shared so
+ * Capture and Bridge render an Idea's metadata identically rather than each
+ * deriving the list.
  */
 export function ideaMetadataLabels(idea: IdeaMetadata): string[] {
   const labels = [...idea.tags, ...idea.instrument, ...idea.style];
   if (idea.tempo !== null) labels.push(`${idea.tempo} BPM`);
+  const location = formatLocationLabel(idea.location);
+  if (location !== null) labels.push(`📍 ${location}`);
   return labels;
 }
 

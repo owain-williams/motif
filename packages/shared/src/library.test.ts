@@ -32,12 +32,13 @@ function idea(id: string, capturedAt: number, durationMs = 1000): IdeaMetadata {
     instrument: [],
     style: [],
     tempo: null,
+    location: null,
     fieldUpdatedAt: {
       name: capturedAt,
       tags: 0,
       instrument: 0,
       style: 0,
-      tempo: 0,
+      tempo: 0, location: 0,
     },
   };
 }

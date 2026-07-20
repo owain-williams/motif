@@ -5,9 +5,17 @@
 
 use bridge_core::{
     apply_idea_edit, merge_idea, AudioFormat, BridgeLibrary, DeviceIdentity, DeviceRole,
-    FieldTimestamps, IdeaMetadata, IdeaMetadataEdit, IdeaMetadataUpdate, IdeaStorageState,
-    PairingRequest, PairingState, SyncState, SYNC_PROTOCOL_VERSION,
+    FieldTimestamps, IdeaLocation, IdeaMetadata, IdeaMetadataEdit, IdeaMetadataUpdate,
+    IdeaStorageState, PairingRequest, PairingState, SyncState, SYNC_PROTOCOL_VERSION,
 };
+
+fn london() -> IdeaLocation {
+    IdeaLocation {
+        lat: 51.5074,
+        lon: -0.1278,
+        label: "London".into(),
+    }
+}
 
 fn capture_identity(id: &str) -> DeviceIdentity {
     DeviceIdentity {
@@ -30,6 +38,7 @@ fn idea(id: &str) -> IdeaMetadata {
         instrument: Vec::new(),
         style: Vec::new(),
         tempo: None,
+        location: None,
         field_updated_at: FieldTimestamps::default(),
     }
 }
@@ -41,6 +50,7 @@ fn edit_of(idea: &IdeaMetadata) -> IdeaMetadataEdit {
         instrument: idea.instrument.clone(),
         style: idea.style.clone(),
         tempo: idea.tempo,
+        location: idea.location.clone(),
     }
 }
 
@@ -75,6 +85,7 @@ fn apply_idea_edit_stamps_only_changed_fields() {
         instrument: Vec::new(),
         style: Vec::new(),
         tempo: Some(128.0),
+        location: None,
     };
     apply_idea_edit(&mut idea, &edit, 9_000);
 
@@ -250,4 +261,65 @@ fn a_metadata_update_for_an_unknown_idea_is_ignored() {
         idea: unknown,
     }));
     assert_eq!(state.library().len(), 1);
+}
+
+#[test]
+fn editing_a_location_label_on_bridge_stamps_and_persists_it() {
+    let capture = capture_identity("cap-1");
+    let mut located = idea("a");
+    located.location = Some(london());
+    located.field_updated_at.location = 100;
+    let mut state = paired_state(&capture, vec![located]);
+
+    let mut edit = edit_of(&{
+        let mut i = idea("a");
+        i.location = Some(london());
+        i
+    });
+    edit.location = Some(IdeaLocation {
+        label: "London studio".into(),
+        ..london()
+    });
+    let updated = state.edit_idea("a", &edit, 9_000).expect("idea exists");
+
+    assert_eq!(updated.location.as_ref().map(|l| l.label.as_str()), Some("London studio"));
+    assert_eq!(updated.field_updated_at.location, 9_000);
+    assert_eq!(
+        state.library().ideas()[0].location.as_ref().unwrap().label,
+        "London studio"
+    );
+}
+
+#[test]
+fn removing_a_location_on_bridge_stamps_and_clears_it() {
+    let capture = capture_identity("cap-1");
+    let mut located = idea("a");
+    located.location = Some(london());
+    located.field_updated_at.location = 100;
+    let mut state = paired_state(&capture, vec![located]);
+
+    // A remove is an edit whose desired location is None.
+    let edit = edit_of(&idea("a"));
+    let updated = state.edit_idea("a", &edit, 9_000).expect("idea exists");
+
+    assert!(updated.location.is_none());
+    assert_eq!(updated.field_updated_at.location, 9_000);
+}
+
+#[test]
+fn merge_takes_location_from_the_most_recent_editor() {
+    let mut local = idea("a");
+    local.location = Some(london());
+    local.field_updated_at.location = 100;
+
+    let mut incoming = idea("a");
+    incoming.location = Some(IdeaLocation {
+        label: "London studio".into(),
+        ..london()
+    });
+    incoming.field_updated_at.location = 200;
+
+    for merged in [merge_idea(&local, &incoming), merge_idea(&incoming, &local)] {
+        assert_eq!(merged.location.unwrap().label, "London studio");
+    }
 }

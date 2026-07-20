@@ -36,12 +36,13 @@ function idea(
     instrument: [],
     style: [],
     tempo: null,
+    location: null,
     fieldUpdatedAt: {
       name: capturedAt,
       tags: 0,
       instrument: 0,
       style: 0,
-      tempo: 0,
+      tempo: 0, location: 0,
     },
     ...overrides,
   };
@@ -178,7 +179,7 @@ describe("reconcileMetadata — bidirectional metadata sync", () => {
     tags: 0,
     instrument: 0,
     style: 0,
-    tempo: 0,
+    tempo: 0, location: 0,
     ...over,
   });
 

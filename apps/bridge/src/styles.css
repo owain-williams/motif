@@ -356,6 +356,38 @@ h1 {
   outline: none;
 }
 
+.metadata-location-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.metadata-coords {
+  color: #6a6a74;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.metadata-location-remove {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  background: #2a2a32;
+  color: #e5808a;
+}
+
+.metadata-location-remove:hover,
+.metadata-location-remove:focus-visible {
+  background: #3a2a2e;
+  outline: none;
+}
+
 .metadata-actions {
   display: flex;
   justify-content: flex-end;

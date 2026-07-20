@@ -1,6 +1,7 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   distinctFieldValues,
+  formatCoordinates,
   formatDuration,
   ideaMetadataLabels,
   normalizeMultiValue,
@@ -8,6 +9,7 @@ import {
   searchLibrary,
 } from "@motif/shared";
 import type {
+  IdeaLocation,
   IdeaMetadata,
   IdeaMetadataEdit,
   MultiValueIdeaField,
@@ -37,6 +39,9 @@ let loadedLibrary: IdeaMetadata[] = [];
 let searchQuery = "";
 // The Idea whose metadata is open in the editor, or null when it's closed.
 let metadataTargetId: string | null = null;
+// The working location tag for the open editor: its coordinates stay fixed (Bridge
+// has no GPS), only the label is edited; `null` once removed or when untagged.
+let metadataLocation: IdeaLocation | null = null;
 
 async function loadPairingInfo(): Promise<void> {
   const el = document.querySelector<HTMLParagraphElement>("#pairing");
@@ -135,7 +140,7 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
       const edit = document.createElement("button");
       edit.className = "edit-handle";
       edit.type = "button";
-      edit.title = "Edit tags, instrument, style, tempo";
+      edit.title = "Edit tags, instrument, style, tempo, location";
       edit.setAttribute("aria-label", `Edit metadata for ${idea.name}`);
       edit.textContent = "Edit";
       edit.addEventListener("click", (event) => {
@@ -256,8 +261,29 @@ function openMetadataEditor(id: string): void {
     if (input) input.value = value;
   }
   MULTI_FIELDS.forEach(renderFieldSuggestions);
+  metadataLocation = idea.location;
+  renderLocationField();
   backdrop.hidden = false;
   fieldInput("tags")?.focus();
+}
+
+/**
+ * Shows the location editor only when the Idea carries a location tag (Bridge has no
+ * GPS, so it can relabel or remove a location but never add one). The label
+ * input is editable; the coordinates are shown read-only beside a Remove button.
+ */
+function renderLocationField(): void {
+  const group = document.querySelector<HTMLDivElement>("#edit-location-group");
+  const labelInput = document.querySelector<HTMLInputElement>("#edit-location-label");
+  const coords = document.querySelector<HTMLElement>("#edit-location-coords");
+  if (!group || !labelInput || !coords) return;
+  if (metadataLocation === null) {
+    group.hidden = true;
+    return;
+  }
+  group.hidden = false;
+  labelInput.value = metadataLocation.label;
+  coords.textContent = formatCoordinates(metadataLocation);
 }
 
 function closeMetadataEditor(): void {
@@ -273,6 +299,7 @@ async function submitMetadataEditor(): Promise<void> {
     closeMetadataEditor();
     return;
   }
+  const labelInput = document.querySelector<HTMLInputElement>("#edit-location-label");
   const edit: IdeaMetadataEdit = {
     // Name isn't edited on Bridge; send the current value so it never re-stamps.
     name: idea.name,
@@ -280,6 +307,12 @@ async function submitMetadataEditor(): Promise<void> {
     instrument: readMultiValueInput("instrument"),
     style: readMultiValueInput("style"),
     tempo: normalizeTempo(fieldInput("tempo")?.value ?? ""),
+    // Send the desired location tag: the fixed coordinates plus the (possibly edited)
+    // label, or null when removed/untagged. An unchanged value never re-stamps.
+    location:
+      metadataLocation === null
+        ? null
+        : { ...metadataLocation, label: (labelInput?.value ?? "").trim() },
   };
   closeMetadataEditor();
   try {
@@ -365,6 +398,12 @@ window.addEventListener("DOMContentLoaded", () => {
   document
     .querySelector<HTMLButtonElement>("#metadata-cancel")
     ?.addEventListener("click", () => closeMetadataEditor());
+  document
+    .querySelector<HTMLButtonElement>("#edit-location-remove")
+    ?.addEventListener("click", () => {
+      metadataLocation = null;
+      renderLocationField();
+    });
   document
     .querySelector<HTMLDivElement>("#metadata-backdrop")
     ?.addEventListener("click", (event) => {

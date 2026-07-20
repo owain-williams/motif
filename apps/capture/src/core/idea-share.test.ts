@@ -29,7 +29,8 @@ function makeIdea(overrides: Partial<IdeaMetadata> = {}): IdeaMetadata {
     instrument: [],
     style: [],
     tempo: null,
-    fieldUpdatedAt: { name: 1_700_000_000_000, tags: 0, instrument: 0, style: 0, tempo: 0 },
+    location: null,
+    fieldUpdatedAt: { name: 1_700_000_000_000, tags: 0, instrument: 0, style: 0, tempo: 0, location: 0 },
     ...overrides,
   };
 }

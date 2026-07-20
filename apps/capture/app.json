@@ -32,7 +32,13 @@
       "expo-audio",
       "expo-sharing",
       "@siteed/audio-studio",
-      "expo-background-task"
+      "expo-background-task",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Motif tags your recordings with where you made them when you turn on location tagging."
+        }
+      ]
     ]
   }
 }

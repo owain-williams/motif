@@ -5,6 +5,7 @@ import {
   FlatList,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -92,6 +93,13 @@ import {
   loadSyncState,
   savePairedBridge,
 } from "./src/sync-storage";
+import { resolveCaptureLocation } from "./src/core/capture-location";
+import {
+  ensureLocationPermission,
+  readLastKnownPosition,
+  reverseGeocode,
+} from "./src/geolocation";
+import { loadSettings, saveSettings } from "./src/settings-storage";
 import { LibraryRow } from "./src/components/LibraryRow";
 import { RenameDialog } from "./src/components/RenameDialog";
 import { MetadataDialog } from "./src/components/MetadataDialog";
@@ -178,6 +186,7 @@ export default function App() {
   const [showPair, setShowPair] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [showAccount, setShowAccount] = useState(false);
+  const [locationTaggingEnabled, setLocationTaggingEnabled] = useState(false);
   const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
   const syncInputsRef = useRef<SyncInputs | null>(null);
@@ -231,6 +240,22 @@ export default function App() {
   useEffect(() => {
     if (playerStatus.didJustFinish) setPlayingId(null);
   }, [playerStatus.didJustFinish]);
+
+  // Restore the persisted location tag toggle. Defaults to off, so nothing is ever
+  // captured until the user turns it on.
+  useEffect(() => {
+    let active = true;
+    loadSettings()
+      .then((settings) => {
+        if (active) setLocationTaggingEnabled(settings.locationTaggingEnabled);
+      })
+      .catch(() => {
+        // A missing/corrupt settings file just means the default (off).
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Load this Capture's identity and any remembered Bridge pairing.
   useEffect(() => {
@@ -444,6 +469,37 @@ export default function App() {
         idToken: authTokensRef.current?.idToken ?? null,
       });
     }
+    // Opt-in location tagging resolves off the record path, so a slow reverse-
+    // geocode never blocks the save (motif-kka.3). When enabled and a position
+    // is available it lands as a metadata edit that syncs like any other field.
+    void attachCapturedLocation(id, startedAt);
+  }
+
+  /**
+   * Best-effort location tag for a just-captured Idea, resolved in the
+   * background so it never blocks the save. Does nothing when tagging is off
+   * (the resolver is the single gate) or no position is available; otherwise it
+   * applies the location as an edit stamped at the capture instant, then
+   * persists and pushes it like any other metadata change (ADR 0006).
+   */
+  async function attachCapturedLocation(id: string, capturedAt: number) {
+    const location = await resolveCaptureLocation({
+      enabled: locationTaggingEnabled,
+      readLastKnownPosition,
+      reverseGeocode,
+    });
+    if (!location) return;
+    const current = libraryRef.current;
+    const before = current.find((entry) => entry.id === id);
+    // The Idea may have been deleted while the geocode was in flight.
+    if (!before) return;
+    const nextLibrary = editIdea(current, id, { location }, capturedAt);
+    const updated = nextLibrary.find((entry) => entry.id === id);
+    if (!updated || sameEditableMetadata(updated, before)) return;
+    libraryRef.current = nextLibrary;
+    saveLibrary(nextLibrary);
+    setLibrary(nextLibrary);
+    pushMetadataEdit(nextLibrary, id);
   }
 
   async function onPressRecord() {
@@ -668,6 +724,24 @@ export default function App() {
     setSyncStatus(null);
   }
 
+  // Turning location tagging on requests location permission up front, so recording
+  // itself is never interrupted by a prompt; a denied request leaves it off.
+  // Turning it off is immediate and needs no permission.
+  async function toggleLocationTagging(next: boolean) {
+    if (next) {
+      const granted = await ensureLocationPermission().catch(() => false);
+      if (!granted) {
+        Alert.alert(
+          "Location access needed",
+          "Allow location access to tag your recordings with where you made them. You can enable it later in system settings.",
+        );
+        return;
+      }
+    }
+    setLocationTaggingEnabled(next);
+    saveSettings({ locationTaggingEnabled: next });
+  }
+
   async function login(email: string, password: string) {
     const tokens = await signIn(email, password);
     const profile = await loadAccount(tokens.idToken);
@@ -817,6 +891,23 @@ export default function App() {
             {isPaired(syncState) ? "Unpair" : "Pair"}
           </Text>
         </Pressable>
+      </View>
+
+      <View style={styles.settingsRow}>
+        <View style={styles.settingsInfo}>
+          <Text style={styles.settingsTitle}>Location tagging</Text>
+          <Text style={styles.settingsSubtitle} numberOfLines={1}>
+            {locationTaggingEnabled
+              ? "New recordings are tagged with your location"
+              : "Off — recordings are never location-tagged"}
+          </Text>
+        </View>
+        <Switch
+          accessibilityLabel="Location tagging"
+          value={locationTaggingEnabled}
+          onValueChange={(next) => void toggleLocationTagging(next)}
+          disabled={isRecording}
+        />
       </View>
 
       <View style={styles.library}>
@@ -1026,6 +1117,30 @@ const styles = StyleSheet.create({
     color: "#f5f5f7",
     fontSize: 14,
     fontWeight: "600",
+  },
+  settingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    backgroundColor: "#16161c",
+    borderRadius: 12,
+  },
+  settingsInfo: {
+    flex: 1,
+  },
+  settingsTitle: {
+    color: "#f5f5f7",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  settingsSubtitle: {
+    color: "#8a8a92",
+    fontSize: 12,
+    marginTop: 2,
   },
   library: {
     flex: 1,

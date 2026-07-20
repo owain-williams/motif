@@ -4,13 +4,16 @@ import {
   autoIdeaName,
   createIdea,
   distinctFieldValues,
+  formatCoordinates,
+  formatLocationLabel,
+  ideaMetadataLabels,
   mergeIdea,
   normalizeMultiValue,
   normalizeTempo,
   sameEditableMetadata,
   withMetadataDefaults,
 } from "./idea.js";
-import type { IdeaMetadata } from "./idea.js";
+import type { IdeaLocation, IdeaMetadata } from "./idea.js";
 
 /**
  * Idea lifecycle helpers (motif-6fu.3). On stop, Capture auto-saves an Idea
@@ -62,12 +65,13 @@ describe("createIdea", () => {
       instrument: [],
       style: [],
       tempo: null,
+      location: null,
       fieldUpdatedAt: {
         name: CAPTURED_AT,
         tags: 0,
         instrument: 0,
         style: 0,
-        tempo: 0,
+        tempo: 0, location: 0,
       },
     });
   });
@@ -112,12 +116,13 @@ function baseIdea(overrides: Partial<IdeaMetadata> = {}): IdeaMetadata {
     instrument: [],
     style: [],
     tempo: null,
+    location: null,
     fieldUpdatedAt: {
       name: CAPTURED_AT,
       tags: 0,
       instrument: 0,
       style: 0,
-      tempo: 0,
+      tempo: 0, location: 0,
     },
     ...overrides,
   };
@@ -148,7 +153,7 @@ describe("withMetadataDefaults", () => {
         tags: 5_000,
         instrument: 0,
         style: 0,
-        tempo: 6_000,
+        tempo: 6_000, location: 0,
       },
     });
     expect(withMetadataDefaults(idea)).toEqual(idea);
@@ -173,13 +178,13 @@ describe("applyIdeaEdit", () => {
   });
 
   it("does not bump a field re-submitted with an unchanged value", () => {
-    const idea = baseIdea({ tags: ["verse"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 3_000, instrument: 0, style: 0, tempo: 0 } });
+    const idea = baseIdea({ tags: ["verse"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 3_000, instrument: 0, style: 0, tempo: 0, location: 0 } });
     const edited = applyIdeaEdit(idea, { tags: ["verse"] }, 9_000);
     expect(edited.fieldUpdatedAt.tags).toBe(3_000);
   });
 
   it("clears tempo and stamps the change when set to null", () => {
-    const idea = baseIdea({ tempo: 120, fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 1_000 } });
+    const idea = baseIdea({ tempo: 120, fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 1_000, location: 0 } });
     const edited = applyIdeaEdit(idea, { tempo: null }, 9_000);
     expect(edited.tempo).toBeNull();
     expect(edited.fieldUpdatedAt.tempo).toBe(9_000);
@@ -198,12 +203,12 @@ describe("mergeIdea", () => {
     const local = baseIdea({
       tags: ["local-tag"],
       instrument: ["guitar"],
-      fieldUpdatedAt: { name: CAPTURED_AT, tags: 100, instrument: 300, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 100, instrument: 300, style: 0, tempo: 0, location: 0 },
     });
     const incoming = baseIdea({
       tags: ["remote-tag"],
       instrument: ["piano"],
-      fieldUpdatedAt: { name: CAPTURED_AT, tags: 200, instrument: 150, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 200, instrument: 150, style: 0, tempo: 0, location: 0 },
     });
     const merged = mergeIdea(local, incoming);
     // Remote's tag edit is newer; local's instrument edit is newer.
@@ -221,12 +226,12 @@ describe("mergeIdea", () => {
     const renamedByA = baseIdea({
       name: "Chorus hook",
       tags: [],
-      fieldUpdatedAt: { name: CAPTURED_AT + 500, tags: 0, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT + 500, tags: 0, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     const taggedByB = baseIdea({
       name: "Idea",
       tags: ["dreamy"],
-      fieldUpdatedAt: { name: CAPTURED_AT, tags: CAPTURED_AT + 400, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: CAPTURED_AT + 400, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     const onA = mergeIdea(renamedByA, taggedByB);
     const onB = mergeIdea(taggedByB, renamedByA);
@@ -243,12 +248,12 @@ describe("mergeIdea", () => {
     const deviceA = baseIdea({
       name: "A name",
       tags: ["a-tag"],
-      fieldUpdatedAt: { name: 600, tags: 500, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: 600, tags: 500, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     const deviceB = baseIdea({
       name: "B name",
       tags: ["b-tag"],
-      fieldUpdatedAt: { name: 400, tags: 700, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: 400, tags: 700, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     for (const merged of [mergeIdea(deviceA, deviceB), mergeIdea(deviceB, deviceA)]) {
       expect(merged.name).toBe("A name"); // A's name edit (600) beats B's (400)
@@ -262,12 +267,12 @@ describe("mergeIdea", () => {
     const local = baseIdea({
       tags: ["mine"],
       storageState: "offloaded",
-      fieldUpdatedAt: { name: CAPTURED_AT, tags: 500, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 500, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     const incoming = baseIdea({
       tags: ["theirs"],
       storageState: "on-device",
-      fieldUpdatedAt: { name: CAPTURED_AT, tags: 500, instrument: 0, style: 0, tempo: 0 },
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 500, instrument: 0, style: 0, tempo: 0, location: 0 },
     });
     const merged = mergeIdea(local, incoming);
     expect(merged.tags).toEqual(["mine"]);
@@ -284,10 +289,107 @@ describe("sameEditableMetadata", () => {
   });
 
   it("is false when a field value or its timestamp differs", () => {
-    const a = baseIdea({ tags: ["x"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 1, instrument: 0, style: 0, tempo: 0 } });
-    const b = baseIdea({ tags: ["x"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 2, instrument: 0, style: 0, tempo: 0 } });
+    const a = baseIdea({ tags: ["x"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 1, instrument: 0, style: 0, tempo: 0, location: 0 } });
+    const b = baseIdea({ tags: ["x"], fieldUpdatedAt: { name: CAPTURED_AT, tags: 2, instrument: 0, style: 0, tempo: 0, location: 0 } });
     expect(sameEditableMetadata(a, b)).toBe(false);
     expect(sameEditableMetadata(a, baseIdea({ tags: ["y"] }))).toBe(false);
+  });
+});
+
+const LONDON: IdeaLocation = { lat: 51.5074, lon: -0.1278, label: "London" };
+
+describe("location editing and merge (motif-kka.3)", () => {
+  it("stamps location when a location tag is set", () => {
+    const edited = applyIdeaEdit(baseIdea(), { location: LONDON }, 9_000);
+    expect(edited.location).toEqual(LONDON);
+    expect(edited.fieldUpdatedAt.location).toBe(9_000);
+  });
+
+  it("stamps location when a location tag is removed", () => {
+    const idea = baseIdea({
+      location: LONDON,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 1_000 },
+    });
+    const edited = applyIdeaEdit(idea, { location: null }, 9_000);
+    expect(edited.location).toBeNull();
+    expect(edited.fieldUpdatedAt.location).toBe(9_000);
+  });
+
+  it("does not re-stamp a location re-submitted unchanged", () => {
+    const idea = baseIdea({
+      location: LONDON,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 3_000 },
+    });
+    const edited = applyIdeaEdit(idea, { location: { ...LONDON } }, 9_000);
+    expect(edited.fieldUpdatedAt.location).toBe(3_000);
+  });
+
+  it("takes the location from whichever side edited it most recently", () => {
+    const relabelled: IdeaLocation = { ...LONDON, label: "London studio" };
+    const local = baseIdea({
+      location: LONDON,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 100 },
+    });
+    const incoming = baseIdea({
+      location: relabelled,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 200 },
+    });
+    for (const merged of [mergeIdea(local, incoming), mergeIdea(incoming, local)]) {
+      expect(merged.location).toEqual(relabelled);
+      expect(merged.fieldUpdatedAt.location).toBe(200);
+    }
+  });
+
+  it("lets a newer removal win the merge over an older location tag", () => {
+    const tagged = baseIdea({
+      location: LONDON,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 100 },
+    });
+    const removed = baseIdea({
+      location: null,
+      fieldUpdatedAt: { name: CAPTURED_AT, tags: 0, instrument: 0, style: 0, tempo: 0, location: 200 },
+    });
+    expect(mergeIdea(tagged, removed).location).toBeNull();
+  });
+
+  it("treats differing locations as different editable metadata", () => {
+    const a = baseIdea({ location: LONDON });
+    const b = baseIdea({ location: { ...LONDON, label: "Elsewhere" } });
+    expect(sameEditableMetadata(a, b)).toBe(false);
+    expect(sameEditableMetadata(baseIdea({ location: LONDON }), a)).toBe(true);
+  });
+});
+
+describe("formatCoordinates", () => {
+  it("renders rounded lat, lon", () => {
+    expect(formatCoordinates(LONDON)).toBe("51.507, -0.128");
+  });
+});
+
+describe("formatLocationLabel", () => {
+  it("uses the place label when present", () => {
+    expect(formatLocationLabel(LONDON)).toBe("London");
+  });
+
+  it("falls back to rounded coordinates when the label is empty", () => {
+    expect(formatLocationLabel({ lat: 51.5074, lon: -0.1278, label: "  " })).toBe(
+      "51.507, -0.128",
+    );
+  });
+
+  it("is null for an untagged Idea", () => {
+    expect(formatLocationLabel(null)).toBeNull();
+  });
+});
+
+describe("ideaMetadataLabels", () => {
+  it("appends a pin-prefixed location after tags, instrument, style, and tempo", () => {
+    const idea = baseIdea({ tags: ["verse"], tempo: 120, location: LONDON });
+    expect(ideaMetadataLabels(idea)).toEqual(["verse", "120 BPM", "📍 London"]);
+  });
+
+  it("omits location for an untagged Idea", () => {
+    expect(ideaMetadataLabels(baseIdea({ tags: ["verse"] }))).toEqual(["verse"]);
   });
 });
 

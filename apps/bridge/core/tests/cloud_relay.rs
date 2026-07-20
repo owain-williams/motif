@@ -140,6 +140,7 @@ fn skips_ideas_bridge_already_received_over_the_local_network() {
         instrument: Vec::new(),
         style: Vec::new(),
         tempo: None,
+        location: None,
         field_updated_at: Default::default(),
     });
     let relay = FakeRelay {

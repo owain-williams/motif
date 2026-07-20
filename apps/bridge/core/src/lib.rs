@@ -96,6 +96,19 @@ pub enum IdeaStorageState {
     Offloaded,
 }
 
+/// Where an Idea was recorded (motif-kka.3). Mirror of `IdeaLocation` in
+/// `@motif/shared`. Captured opt-in on Capture; Bridge can edit the `label` or
+/// remove the whole location tag, syncing per-field like the other metadata (ADR
+/// 0006). (`Eq` is not derived — the coordinates are floats.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaLocation {
+    pub lat: f64,
+    pub lon: f64,
+    /// Reverse-geocoded place label, or `""` when none could be resolved.
+    pub label: String,
+}
+
 /// Per-field last-edit timestamps (epoch ms) driving last-write-wins metadata
 /// merges (ADR 0006). Mirror of `IdeaFieldTimestamps` in `@motif/shared`. Every
 /// field `#[serde(default)]`s to 0 so a Library persisted before this schema
@@ -113,6 +126,8 @@ pub struct FieldTimestamps {
     pub style: i64,
     #[serde(default)]
     pub tempo: i64,
+    #[serde(default)]
+    pub location: i64,
 }
 
 /// Portable Idea metadata — the syncable record for one captured recording.
@@ -145,6 +160,9 @@ pub struct IdeaMetadata {
     /// Tempo in BPM, or `None` when unset.
     #[serde(default)]
     pub tempo: Option<f64>,
+    /// Where the recording was made, or `None` when untagged (motif-kka.3).
+    #[serde(default)]
+    pub location: Option<IdeaLocation>,
     /// Per-field last-edit timestamps (ADR 0006).
     #[serde(default)]
     pub field_updated_at: FieldTimestamps,
@@ -162,6 +180,10 @@ pub struct IdeaMetadataEdit {
     pub instrument: Vec<String>,
     pub style: Vec<String>,
     pub tempo: Option<f64>,
+    /// The desired location tag: `Some` to set/relabel, `None` to remove or leave
+    /// untagged. Only re-stamped when it differs from the held value.
+    #[serde(default)]
+    pub location: Option<IdeaLocation>,
 }
 
 /// Applies `edit` to `idea` in place, stamping each field that changes at
@@ -187,6 +209,10 @@ pub fn apply_idea_edit(idea: &mut IdeaMetadata, edit: &IdeaMetadataEdit, edited_
     if idea.tempo != edit.tempo {
         idea.tempo = edit.tempo;
         idea.field_updated_at.tempo = edited_at;
+    }
+    if idea.location != edit.location {
+        idea.location = edit.location.clone();
+        idea.field_updated_at.location = edited_at;
     }
 }
 
@@ -216,6 +242,10 @@ pub fn merge_idea(local: &IdeaMetadata, incoming: &IdeaMetadata) -> IdeaMetadata
     if incoming.field_updated_at.tempo > local.field_updated_at.tempo {
         merged.tempo = incoming.tempo;
         merged.field_updated_at.tempo = incoming.field_updated_at.tempo;
+    }
+    if incoming.field_updated_at.location > local.field_updated_at.location {
+        merged.location = incoming.location.clone();
+        merged.field_updated_at.location = incoming.field_updated_at.location;
     }
     merged
 }
