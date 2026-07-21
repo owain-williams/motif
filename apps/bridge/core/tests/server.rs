@@ -226,6 +226,60 @@ fn exchanges_delete_records_with_capture_over_the_loopback_network() {
 }
 
 #[test]
+fn a_delete_made_on_bridge_reaches_capture_over_the_loopback_network() {
+    let state = fresh_bridge();
+    let sink = Arc::new(RecordingSink::default());
+    let addr = start(state.clone(), sink.clone());
+
+    http(addr, "POST", "/motif/pair", pair_body("424242").as_bytes());
+    let audio: &[u8] = b"FAKE-AAC-AUDIO-BYTES";
+    let json = offer_json("song", audio.len());
+    http(addr, "POST", "/motif/ideas", &framed_offer(&json, audio));
+
+    // The user deletes it in Bridge's UI.
+    assert!(state.lock().unwrap().delete_idea("song", 1_700_000_005_000));
+    assert!(state.lock().unwrap().active_ideas().is_empty());
+
+    // Capture's next sync pass posts its own manifest and reads Bridge's back.
+    let (status, body) = http(
+        addr,
+        "POST",
+        "/motif/manifest",
+        capture_manifest_body(r#""song""#, "").as_bytes(),
+    );
+    assert_eq!(status, 200);
+    assert!(body.contains(r#""id":"song""#), "body: {body}");
+    assert!(
+        body.contains(r#""deletedAt":1700000005000"#),
+        "body: {body}"
+    );
+
+    // A plain manifest read carries it too, for a peer that only polls.
+    let (_, body) = http(addr, "GET", "/motif/manifest", b"");
+    assert!(
+        body.contains(r#""deletedAt":1700000005000"#),
+        "body: {body}"
+    );
+
+    // Restoring on Bridge reaches Capture the same way, with no extra message.
+    assert!(state
+        .lock()
+        .unwrap()
+        .restore_idea("song", 1_700_000_006_000));
+    let (_, body) = http(
+        addr,
+        "POST",
+        "/motif/manifest",
+        capture_manifest_body(r#""song""#, "").as_bytes(),
+    );
+    assert!(
+        body.contains(r#""restoredAt":1700000006000"#),
+        "body: {body}"
+    );
+    assert_eq!(state.lock().unwrap().active_ideas().len(), 1);
+}
+
+#[test]
 fn a_manifest_from_an_unpaired_peer_changes_nothing() {
     let state = fresh_bridge();
     let sink = Arc::new(RecordingSink::default());

@@ -15,7 +15,7 @@ use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
     audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeletionLog,
     DeviceIdentity, DeviceRole, HandoffPlan, IdeaDeletion, IdeaMetadata, IdeaMetadataEdit,
-    PairingState, PairingStatus, SyncState, PAIRING_CODE_LENGTH,
+    PairingState, PairingStatus, RecentlyDeletedIdea, SyncState, PAIRING_CODE_LENGTH,
 };
 use tauri::{Manager, State};
 
@@ -36,6 +36,7 @@ struct BridgeState {
     data_dir: PathBuf,
     manifest_path: PathBuf,
     pairing_path: PathBuf,
+    deletions_path: PathBuf,
     cloud_token: Arc<Mutex<Option<String>>>,
     // Keeping the daemon alive keeps this Bridge advertised over Bonjour.
     _discovery: Option<BridgeAdvertisement>,
@@ -200,6 +201,54 @@ fn edit_idea(
     // through one path (Capture pulls the edit on its next sync).
     write_library_manifest(&state.manifest_path, sync.library());
     Ok(updated)
+}
+
+/// The Ideas Bridge has deleted but still holds, newest deletion first — the
+/// Recently Deleted view. Each entry carries when it may be purged, so the UI
+/// can show how long is left to restore it (ADR 0005).
+#[tauri::command]
+fn recently_deleted(state: State<'_, BridgeState>) -> Vec<RecentlyDeletedIdea> {
+    state.sync.lock().unwrap().recently_deleted()
+}
+
+/// Deletes an Idea on this Bridge. Soft: the audio stays on disk for the 30-day
+/// grace period, and the record written here is what reaches Capture on its next
+/// manifest exchange, taking the Idea out of the phone's Library too.
+#[tauri::command]
+fn delete_idea(id: String, state: State<'_, BridgeState>) -> Result<(), String> {
+    let now = unix_timestamp_millis();
+    let mut sync = state
+        .sync
+        .lock()
+        .map_err(|_| "Library unavailable".to_string())?;
+    if !sync.library().has(&id) {
+        return Err("Idea not found".to_string());
+    }
+    // Deleting an Idea already deleted is the state the user asked for, not an
+    // error: Capture's delete for the same Idea may have merged in while the
+    // confirmation was on screen.
+    if sync.delete_idea(&id, now) {
+        write_deletions(&state.deletions_path, sync.deletions());
+    }
+    Ok(())
+}
+
+/// Restores a deleted Idea. Bridge still holds its audio inside the grace
+/// period, so nothing is re-fetched; the restore reaches Capture through the
+/// same exchange that carried the delete.
+#[tauri::command]
+fn restore_idea(id: String, state: State<'_, BridgeState>) -> Result<(), String> {
+    let now = unix_timestamp_millis();
+    let mut sync = state
+        .sync
+        .lock()
+        .map_err(|_| "Library unavailable".to_string())?;
+    // An Idea that isn't deleted is already where a restore would put it, so
+    // this is idempotent — a stale Recently Deleted row can't raise an error.
+    if sync.restore_idea(&id, now) {
+        write_deletions(&state.deletions_path, sync.deletions());
+    }
+    Ok(())
 }
 
 /// The active pairing code, expiry, and any brute-force cooldown. Reading an
@@ -368,6 +417,7 @@ pub fn run() {
                 data_dir,
                 manifest_path,
                 pairing_path,
+                deletions_path,
                 cloud_token,
                 _discovery: discovery,
             });
@@ -376,6 +426,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             protocol_version,
             library,
+            recently_deleted,
+            delete_idea,
+            restore_idea,
             edit_idea,
             pairing_info,
             enable_cloud_sync,
@@ -385,4 +438,44 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_deletions, write_deletions};
+    use bridge_core::DeletionLog;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("motif-{name}-{}.json", std::process::id()))
+    }
+
+    /// A tombstone has to outlive a restart: it keeps being exchanged until
+    /// every paired device has applied the delete (ADR 0005).
+    #[test]
+    fn deletions_survive_a_restart() {
+        let path = temp_path("deletions");
+        let mut log = DeletionLog::new();
+        log.mark_deleted("gone", 1_700_000_000_000);
+        log.mark_deleted("back", 1_700_000_000_000);
+        log.mark_restored("back", 1_700_000_001_000);
+
+        write_deletions(&path, &log);
+        let reloaded = load_deletions(&path);
+
+        assert!(reloaded.is_deleted("gone"));
+        assert!(!reloaded.is_deleted("back"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_deletions_file_loads_as_nothing_deleted() {
+        assert!(load_deletions(&temp_path("no-such-deletions"))
+            .records()
+            .is_empty());
+
+        let path = temp_path("corrupt-deletions");
+        std::fs::write(&path, b"{ not json").expect("write fixture");
+        assert!(load_deletions(&path).records().is_empty());
+        let _ = std::fs::remove_file(path);
+    }
 }

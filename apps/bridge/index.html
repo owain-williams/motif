@@ -36,6 +36,11 @@
         <p id="empty" class="empty">Waiting for an Idea to sync from your phone…</p>
         <ul id="library" class="library"></ul>
       </section>
+      <section id="recently-deleted-section" class="library-section" aria-labelledby="recently-deleted-heading" hidden>
+        <h2 id="recently-deleted-heading" class="library-heading">Recently Deleted</h2>
+        <p id="recently-deleted-hint" class="empty"></p>
+        <ul id="recently-deleted" class="library"></ul>
+      </section>
       <section id="preview" class="preview" hidden>
         <div class="preview-copy">
           <span class="preview-label">Preview</span>
@@ -78,6 +83,17 @@
         <div class="metadata-actions">
           <button type="button" id="metadata-cancel" class="metadata-cancel">Cancel</button>
           <button type="submit" class="metadata-save">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="delete-backdrop" class="metadata-backdrop" hidden>
+      <form id="delete-form" class="metadata-form" aria-labelledby="delete-title">
+        <h2 id="delete-title">Delete Idea?</h2>
+        <p id="delete-message" class="metadata-idea-name"></p>
+        <div class="metadata-actions">
+          <button type="button" id="delete-cancel" class="metadata-cancel">Cancel</button>
+          <button type="submit" class="delete-confirm">Delete</button>
         </div>
       </form>
     </div>

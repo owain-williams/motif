@@ -137,7 +137,7 @@ h1 {
 
 .library-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   align-items: center;
   gap: 12px 16px;
   padding: 12px 16px;
@@ -173,7 +173,12 @@ h1 {
   flex-shrink: 0;
 }
 
-.edit-handle {
+/* Every button that sits on a Library row shares one shape; only the accent
+   each takes on hover differs. */
+.edit-handle,
+.restore-handle,
+.delete-handle,
+.drag-handle {
   border: 1px solid #444450;
   border-radius: 7px;
   background: #252530;
@@ -185,8 +190,19 @@ h1 {
 }
 
 .edit-handle:hover,
-.edit-handle:focus-visible {
+.edit-handle:focus-visible,
+.restore-handle:hover,
+.restore-handle:focus-visible,
+.drag-handle:hover,
+.drag-handle:focus-visible {
   border-color: #817aff;
+  outline: none;
+}
+
+.delete-handle:hover,
+.delete-handle:focus-visible {
+  border-color: #e5484d;
+  color: #ff9ea1;
   outline: none;
 }
 
@@ -205,25 +221,25 @@ h1 {
   color: #b9b9c4;
 }
 
+/* A deleted Idea is listed, not previewable — nothing on the row is clickable
+   but Restore, so it drops the Library's whole-row affordances and its three
+   cells get their own track sizes rather than the Library's five. */
+.deleted-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  cursor: default;
+  opacity: 0.75;
+}
+
+.deleted-row:hover {
+  background: #16161c;
+}
+
 .drag-handle {
-  border: 1px solid #444450;
-  border-radius: 7px;
-  background: #252530;
-  color: #dadae2;
-  padding: 6px 9px;
-  font: inherit;
-  font-size: 12px;
   cursor: grab;
 }
 
 .drag-handle:active {
   cursor: grabbing;
-}
-
-.drag-handle:hover,
-.drag-handle:focus-visible {
-  border-color: #817aff;
-  outline: none;
 }
 
 .preview {
@@ -411,6 +427,12 @@ h1 {
 
 .metadata-save {
   background: #6f68ff;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.delete-confirm {
+  background: #e5484d;
   color: #ffffff;
   font-weight: 600;
 }

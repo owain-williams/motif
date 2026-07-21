@@ -3,9 +3,11 @@ import {
   distinctFieldValues,
   formatCoordinates,
   formatDuration,
+  formatRestoreWindow,
   ideaMetadataLabels,
   normalizeMultiValue,
   normalizeTempo,
+  RECENTLY_DELETED_RETENTION_DAYS,
   searchLibrary,
 } from "@motif/shared";
 import type {
@@ -13,6 +15,7 @@ import type {
   IdeaMetadata,
   IdeaMetadataEdit,
   MultiValueIdeaField,
+  RecentlyDeletedIdea,
 } from "@motif/shared";
 
 /**
@@ -36,7 +39,10 @@ const DRAG_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAAAKUlEQVR4nO3OMQEAAAgDINc/9K3hHFQgE1mZmZmZmZmZmZmZmZmZmZk9uwFmhQJBsT+YVAAAAABJRU5ErkJggg==";
 let selectedIdeaId: string | null = null;
 let loadedLibrary: IdeaMetadata[] = [];
+let deletedIdeas: RecentlyDeletedIdea[] = [];
 let searchQuery = "";
+// The Idea the delete confirmation is open for, or null when it's closed.
+let deleteTargetId: string | null = null;
 // The Idea whose metadata is open in the editor, or null when it's closed.
 let metadataTargetId: string | null = null;
 // The working location tag for the open editor: its coordinates stay fixed (Bridge
@@ -82,6 +88,19 @@ async function previewIdea(idea: IdeaMetadata): Promise<void> {
   } catch {
     setHandoffStatus("That Idea's audio could not be previewed.", true);
   }
+}
+
+/** Stops and hides the preview panel, e.g. once its Idea leaves the Library. */
+function stopPreview(): void {
+  const preview = document.querySelector<HTMLElement>("#preview");
+  const player = document.querySelector<HTMLAudioElement>("#player");
+  selectedIdeaId = null;
+  if (player) {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+  }
+  if (preview) preview.hidden = true;
 }
 
 function setHandoffStatus(message: string, isError = false): void {
@@ -148,6 +167,17 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
         openMetadataEditor(idea.id);
       });
 
+      const remove = document.createElement("button");
+      remove.className = "delete-handle";
+      remove.type = "button";
+      remove.title = "Delete on this Bridge and your paired phone";
+      remove.setAttribute("aria-label", `Delete ${idea.name}`);
+      remove.textContent = "Delete";
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openDeleteConfirmation(idea.id);
+      });
+
       const drag = document.createElement("button");
       drag.className = "drag-handle";
       drag.type = "button";
@@ -168,13 +198,103 @@ function renderLibrary(ideas: readonly IdeaMetadata[]): void {
           void previewIdea(idea);
         }
       });
-      row.append(name, duration, edit, drag);
+      row.append(name, duration, edit, remove, drag);
 
       const chips = metadataChips(idea);
       if (chips) row.append(chips);
       return row;
     }),
   );
+}
+
+/**
+ * Recently Deleted: the Ideas this Bridge has deleted but still holds, each
+ * restorable until its window runs out (CONTEXT.md, ADR 0005). Hidden entirely
+ * when nothing is deleted, so it stays out of the way. `now` is read once per
+ * render rather than per row, so every window is measured against one instant.
+ */
+function renderRecentlyDeleted(): void {
+  const section = document.querySelector<HTMLElement>(
+    "#recently-deleted-section",
+  );
+  const list = document.querySelector<HTMLUListElement>("#recently-deleted");
+  const hint = document.querySelector<HTMLParagraphElement>(
+    "#recently-deleted-hint",
+  );
+  if (!section || !list || !hint) return;
+
+  section.hidden = deletedIdeas.length === 0;
+  hint.textContent = `Deleted Ideas stay here for ${RECENTLY_DELETED_RETENTION_DAYS} days before they go for good.`;
+  const now = Date.now();
+  list.replaceChildren(
+    ...deletedIdeas.map((entry) => {
+      const row = document.createElement("li");
+      row.className = "library-row deleted-row";
+
+      const name = document.createElement("span");
+      name.className = "idea-name";
+      name.textContent = entry.idea.name;
+
+      const duration = document.createElement("span");
+      duration.className = "idea-duration";
+      duration.textContent = `${formatDuration(entry.idea.durationMs)} · ${formatRestoreWindow(entry.purgeAt, now)}`;
+
+      const restore = document.createElement("button");
+      restore.className = "restore-handle";
+      restore.type = "button";
+      restore.title = "Put this Idea back in the Library, here and on your phone";
+      restore.setAttribute("aria-label", `Restore ${entry.idea.name}`);
+      restore.textContent = "Restore";
+      restore.addEventListener("click", () => void restoreIdea(entry.idea.id));
+
+      row.append(name, duration, restore);
+      return row;
+    }),
+  );
+}
+
+function openDeleteConfirmation(id: string): void {
+  const idea = loadedLibrary.find((entry) => entry.id === id);
+  const backdrop = document.querySelector<HTMLDivElement>("#delete-backdrop");
+  const message = document.querySelector<HTMLElement>("#delete-message");
+  if (!idea || !backdrop || !message) return;
+  deleteTargetId = id;
+  message.textContent = `"${idea.name}" moves to Recently Deleted here, and on your paired phone when it's next reachable. You can restore it for ${RECENTLY_DELETED_RETENTION_DAYS} days.`;
+  backdrop.hidden = false;
+  document.querySelector<HTMLButtonElement>("#delete-cancel")?.focus();
+}
+
+function closeDeleteConfirmation(): void {
+  deleteTargetId = null;
+  const backdrop = document.querySelector<HTMLDivElement>("#delete-backdrop");
+  if (backdrop) backdrop.hidden = true;
+}
+
+/**
+ * Soft-deletes the confirmed Idea; its audio stays for the grace period. The
+ * refresh is what takes it out of the Library and stops its preview, so a
+ * delete made here and one arriving from the phone land the same way.
+ */
+async function confirmDelete(): Promise<void> {
+  const id = deleteTargetId;
+  closeDeleteConfirmation();
+  if (!id) return;
+  try {
+    await invoke("delete_idea", { id });
+    await refreshLibrary();
+  } catch (error) {
+    setHandoffStatus(`Could not delete that Idea: ${String(error)}`, true);
+  }
+}
+
+/** Brings a deleted Idea back; Capture picks the restore up on its next sync. */
+async function restoreIdea(id: string): Promise<void> {
+  try {
+    await invoke("restore_idea", { id });
+    await refreshLibrary();
+  } catch (error) {
+    setHandoffStatus(`Could not restore that Idea: ${String(error)}`, true);
+  }
 }
 
 const MULTI_FIELDS: readonly MultiValueIdeaField[] = [
@@ -374,7 +494,18 @@ async function loginForCloud(email: string, password: string): Promise<void> {
 async function refreshLibrary(): Promise<void> {
   try {
     loadedLibrary = await invoke<IdeaMetadata[]>("library");
+    deletedIdeas =
+      await invoke<RecentlyDeletedIdea[]>("recently_deleted");
+    // The preview follows the active Library: an Idea deleted here or on the
+    // phone stops playing rather than outliving its row.
+    if (
+      selectedIdeaId !== null &&
+      !loadedLibrary.some((idea) => idea.id === selectedIdeaId)
+    ) {
+      stopPreview();
+    }
     renderLibrary(searchLibrary(loadedLibrary, searchQuery));
+    renderRecentlyDeleted();
   } catch {
     // A transient command failure just means we keep the last render.
   }
@@ -398,6 +529,19 @@ window.addEventListener("DOMContentLoaded", () => {
   document
     .querySelector<HTMLButtonElement>("#metadata-cancel")
     ?.addEventListener("click", () => closeMetadataEditor());
+  document.querySelector<HTMLFormElement>("#delete-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void confirmDelete();
+  });
+  document
+    .querySelector<HTMLButtonElement>("#delete-cancel")
+    ?.addEventListener("click", () => closeDeleteConfirmation());
+  document
+    .querySelector<HTMLDivElement>("#delete-backdrop")
+    ?.addEventListener("click", (event) => {
+      // A click on the backdrop itself (not the form) cancels the delete.
+      if (event.target === event.currentTarget) closeDeleteConfirmation();
+    });
   document
     .querySelector<HTMLButtonElement>("#edit-location-remove")
     ?.addEventListener("click", () => {
