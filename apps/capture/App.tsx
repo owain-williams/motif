@@ -30,9 +30,14 @@ import {
   editIdea,
   formatDuration,
   insertIdea,
+  isIdeaDeleted,
+  markIdeaDeleted,
+  markIdeaRestored,
+  mergeDeletions,
   mergeIdea,
   normalizeIdeaName,
-  removeIdea,
+  recentlyDeletedIdeas,
+  RECENTLY_DELETED_RETENTION_DAYS,
   renameIdea,
   recordingProfile,
   sameDeletions,
@@ -71,7 +76,6 @@ import {
 } from "./src/recording-config";
 import {
   deleteIdeaAudio,
-  deleteIdeaWaveform,
   ideaAudioUri,
   loadDeletions,
   loadIdeaWaveforms,
@@ -106,6 +110,7 @@ import {
 } from "./src/geolocation";
 import { loadSettings, saveSettings } from "./src/settings-storage";
 import { LibraryRow } from "./src/components/LibraryRow";
+import { RecentlyDeletedDialog } from "./src/components/RecentlyDeletedDialog";
 import { RenameDialog } from "./src/components/RenameDialog";
 import { MetadataDialog } from "./src/components/MetadataDialog";
 import { PairBridgeDialog } from "./src/components/PairBridgeDialog";
@@ -191,6 +196,11 @@ export default function App() {
   const [showPair, setShowPair] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [showAccount, setShowAccount] = useState(false);
+  const [showRecentlyDeleted, setShowRecentlyDeleted] = useState(false);
+  // The instant Recently Deleted was last opened. Its "N days left" figures are
+  // read as of then, so they hold still while the sheet is up (and through its
+  // closing animation) rather than drifting under the user.
+  const [recentlyDeletedAsOf, setRecentlyDeletedAsOf] = useState(0);
   const [locationTaggingEnabled, setLocationTaggingEnabled] = useState(false);
   const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
@@ -223,6 +233,16 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  // Playback follows the active Library: whether the delete was made here or
+  // arrived from Bridge, an Idea that leaves the Library stops playing.
+  useEffect(() => {
+    // `stopPlaybackIfPlaying` is re-made each render, closing over the current
+    // player and playingId, so calling it here always acts on live state.
+    if (playingId !== null && isIdeaDeleted(deletions, playingId)) {
+      stopPlaybackIfPlaying(playingId);
+    }
+  }, [deletions, playingId]);
 
   useEffect(() => {
     let active = true;
@@ -323,14 +343,20 @@ export default function App() {
   }, []);
 
   /**
-   * Adopts the delete/restore records a sync pass merged, persisting only when
-   * they actually changed so an idle pass writes nothing.
+   * Adopts delete/restore records — from a local delete or restore, or merged
+   * from Bridge. Merged into whatever this device holds *now* rather than
+   * replacing it: a sync pass reads the records before its uploads and reports
+   * back after, so a delete made meanwhile would otherwise be overwritten by
+   * the pass's stale copy. The merge is order-independent (ADR 0005), so the
+   * two can't disagree. Persists only on a real change, so an idle pass writes
+   * nothing.
    */
-  const applyMergedDeletions = useCallback((merged: readonly IdeaDeletion[]) => {
-    if (sameDeletions(deletionsRef.current, merged)) return;
-    deletionsRef.current = merged;
-    saveDeletions(merged);
-    setDeletions(merged);
+  const applyDeletions = useCallback((incoming: readonly IdeaDeletion[]) => {
+    const next = mergeDeletions(deletionsRef.current, incoming);
+    if (sameDeletions(deletionsRef.current, next)) return;
+    deletionsRef.current = next;
+    saveDeletions(next);
+    setDeletions(next);
   }, []);
 
   // Runs every path the tier allows. LAN remains preferred and independent:
@@ -353,7 +379,7 @@ export default function App() {
           deletions: deletionsRef.current,
           readAudio,
         });
-        applyMergedDeletions(merged);
+        applyDeletions(merged);
         statuses.push(
           synced.length > 0
             ? `${synced.length} to ${inputs.bridge.displayName}`
@@ -390,7 +416,7 @@ export default function App() {
 
     setSyncStatus(statuses.join(" · ") || null);
     },
-    [applyMergedMetadata, applyMergedDeletions],
+    [applyMergedMetadata, applyDeletions],
   );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
@@ -417,18 +443,20 @@ export default function App() {
     });
   }, [syncState.pairedBridge, captureIdentity, tier, account]);
 
+  /** Runs a sync pass immediately with the latest inputs, if any path is open. */
+  const syncNow = useCallback(() => {
+    const inputs = syncInputsRef.current;
+    if (inputs) void runSync(inputs);
+  }, [runSync]);
+
   // Sync now and on an interval whenever LAN or paid cloud relay is available.
   useEffect(() => {
     if (!captureIdentity) return;
     if (syncTransports(tier, syncState.pairedBridge !== null).length === 0) return;
-    const tick = () => {
-      const inputs = syncInputsRef.current;
-      if (inputs) void runSync(inputs);
-    };
-    tick();
-    const timer = setInterval(tick, SYNC_INTERVAL_MS);
+    syncNow();
+    const timer = setInterval(syncNow, SYNC_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [syncState.pairedBridge, captureIdentity, tier, account, runSync]);
+  }, [syncState.pairedBridge, captureIdentity, tier, account, syncNow]);
 
   async function extractAndPersistWaveform(ideaId: string, fileUri: string) {
     try {
@@ -817,36 +845,49 @@ export default function App() {
     setShowAccount(false);
   }
 
+  /**
+   * Deletes an Idea everywhere, after confirming. Soft: the audio and waveform
+   * stay on the device for the 30-day Recently Deleted window (ADR 0005), and
+   * the record is what reaches Bridge on the next exchange — nudged here so the
+   * delete lands on the paired device right away rather than at the next tick.
+   */
   function confirmDelete(idea: IdeaMetadata) {
-    Alert.alert("Delete idea?", `"${idea.name}" will be permanently deleted.`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: () => {
-          stopPlaybackIfPlaying(idea.id);
-          deleteIdeaAudio(idea.id, audioExtension(idea.audioFormat));
-          deleteIdeaWaveform(idea.id);
-          setWaveforms((current) => {
-            const next = { ...current };
-            delete next[idea.id];
-            return next;
-          });
-          const next = removeIdea(library, idea.id);
-          saveLibrary(next);
-          setLibrary(next);
+    Alert.alert(
+      "Delete idea?",
+      `"${idea.name}" moves to Recently Deleted here, and on your paired devices when they're next reachable. You can restore it for ${RECENTLY_DELETED_RETENTION_DAYS} days.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            applyDeletions(markIdeaDeleted(deletionsRef.current, idea.id, Date.now()));
+            syncNow();
+          },
         },
-      },
-    ]);
+      ],
+    );
+  }
+
+  /**
+   * Brings a deleted Idea back. Its audio never left this device, so this is
+   * just the record; the same exchange that carried the delete carries the
+   * restore back to Bridge, which re-offers the audio if it had purged it.
+   */
+  function restoreIdea(idea: IdeaMetadata) {
+    applyDeletions(markIdeaRestored(deletionsRef.current, idea.id, Date.now()));
+    syncNow();
   }
 
   // Deleted Ideas drop out of the Library the moment a delete lands, here or
   // from Bridge; their audio stays for the grace period (ADR 0005).
-  const visibleLibrary = searchLibrary(activeIdeas(library, deletions), searchQuery);
+  const activeLibrary = activeIdeas(library, deletions);
+  const deletedIdeas = recentlyDeletedIdeas(library, deletions);
+  const visibleLibrary = searchLibrary(activeLibrary, searchQuery);
   const metadataSuggestions = {
-    tags: distinctFieldValues(library, "tags"),
-    instrument: distinctFieldValues(library, "instrument"),
-    style: distinctFieldValues(library, "style"),
+    tags: distinctFieldValues(activeLibrary, "tags"),
+    instrument: distinctFieldValues(activeLibrary, "instrument"),
+    style: distinctFieldValues(activeLibrary, "style"),
   };
 
   return (
@@ -956,7 +997,24 @@ export default function App() {
       </View>
 
       <View style={styles.library}>
-        <Text style={styles.libraryHeading}>Library</Text>
+        <View style={styles.libraryHeader}>
+          <Text style={styles.libraryHeading}>Library</Text>
+          {deletedIdeas.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Recently Deleted"
+              onPress={() => {
+                setRecentlyDeletedAsOf(Date.now());
+                setShowRecentlyDeleted(true);
+              }}
+              style={styles.recentlyDeletedButton}
+            >
+              <Text style={styles.recentlyDeletedLabel}>
+                {`Recently Deleted (${deletedIdeas.length})`}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
         <TextInput
           accessibilityLabel="Search Library"
           value={searchQuery}
@@ -969,7 +1027,7 @@ export default function App() {
         />
         {isLoading ? (
           <ActivityIndicator color="#8a8a92" style={styles.libraryLoading} />
-        ) : library.length === 0 ? (
+        ) : activeLibrary.length === 0 ? (
           <Text style={styles.empty}>No ideas yet. Tap the button to record one.</Text>
         ) : visibleLibrary.length === 0 ? (
           <Text style={styles.empty}>No ideas match your search.</Text>
@@ -996,6 +1054,14 @@ export default function App() {
           />
         )}
       </View>
+
+      <RecentlyDeletedDialog
+        visible={showRecentlyDeleted}
+        ideas={deletedIdeas}
+        now={recentlyDeletedAsOf}
+        onRestore={restoreIdea}
+        onClose={() => setShowRecentlyDeleted(false)}
+      />
 
       <RenameDialog
         visible={renameTarget !== null}
@@ -1190,11 +1256,29 @@ const styles = StyleSheet.create({
   library: {
     flex: 1,
   },
+  libraryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
   libraryHeading: {
     color: "#f5f5f7",
     fontSize: 16,
     fontWeight: "600",
     marginBottom: 8,
+  },
+  recentlyDeletedButton: {
+    marginBottom: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: "#16161c",
+  },
+  recentlyDeletedLabel: {
+    color: "#8a8a92",
+    fontSize: 12,
+    fontWeight: "500",
   },
   searchInput: {
     color: "#f5f5f7",

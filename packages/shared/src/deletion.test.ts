@@ -3,12 +3,14 @@ import type { IdeaMetadata } from "./idea.js";
 import {
   activeIdeas,
   expiredDeletions,
+  formatRestoreWindow,
   isIdeaDeleted,
   markIdeaDeleted,
   markIdeaRestored,
   mergeDeletions,
   purgeAt,
   recentlyDeletedIdeas,
+  RECENTLY_DELETED_RETENTION_DAYS,
   RECENTLY_DELETED_RETENTION_MS,
   sameDeletions,
 } from "./deletion.js";
@@ -228,6 +230,34 @@ describe("purgeAt", () => {
     const [record] = markIdeaDeleted([], "a", T0);
     expect(purgeAt(record!)).toBe(T0 + 30 * DAY);
     expect(RECENTLY_DELETED_RETENTION_MS).toBe(30 * DAY);
+  });
+
+  it("enforces exactly the window users are told about", () => {
+    expect(RECENTLY_DELETED_RETENTION_DAYS * DAY).toBe(
+      RECENTLY_DELETED_RETENTION_MS,
+    );
+  });
+});
+
+describe("formatRestoreWindow", () => {
+  it("counts a whole 30-day window from the moment of deletion", () => {
+    expect(formatRestoreWindow(T0 + 30 * DAY, T0)).toBe("30 days left");
+  });
+
+  it("rounds a part-day up, so a window never reads shorter than it is", () => {
+    expect(formatRestoreWindow(T0 + 2 * DAY, T0 + 1.5 * DAY)).toBe("1 day left");
+  });
+
+  it("says one day in the singular", () => {
+    expect(formatRestoreWindow(T0 + DAY, T0)).toBe("1 day left");
+  });
+
+  it("warns once the window is all but gone", () => {
+    expect(formatRestoreWindow(T0, T0)).toBe("Deleting soon");
+  });
+
+  it("warns rather than counting backwards past the window", () => {
+    expect(formatRestoreWindow(T0, T0 + 5 * DAY)).toBe("Deleting soon");
   });
 });
 

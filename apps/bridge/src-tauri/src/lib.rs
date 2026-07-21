@@ -170,9 +170,12 @@ fn protocol_version() -> u32 {
 }
 
 /// The Ideas Bridge has received, newest first — the desktop Library view.
+/// Excludes anything deleted: a delete made on Capture reaches Bridge through
+/// the manifest exchange (ADR 0005) and must take the Idea out of the Library
+/// here too, even though Bridge's own delete/restore UI is still to come.
 #[tauri::command]
 fn library(state: State<'_, BridgeState>) -> Vec<IdeaMetadata> {
-    state.sync.lock().unwrap().library().ideas().to_vec()
+    state.sync.lock().unwrap().active_ideas()
 }
 
 /// Applies a metadata edit made in Bridge's UI to the held Idea and persists the

@@ -18,8 +18,13 @@ import type { IdeaMetadata } from "./idea.js";
  * own — a restore is simply a `restoredAt` newer than the peer's `deletedAt`.
  */
 
-/** How long a deleted Idea stays restorable on a device before it is purged. */
-export const RECENTLY_DELETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * How long a deleted Idea stays restorable on a device before it is purged.
+ * Exported in days too, so the figure a user is told matches the one enforced.
+ */
+export const RECENTLY_DELETED_RETENTION_DAYS = 30;
+export const RECENTLY_DELETED_RETENTION_MS =
+  RECENTLY_DELETED_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * One device's view of whether an Idea is deleted. Both timestamps are epoch ms
@@ -193,6 +198,19 @@ export function recentlyDeletedIdeas<T extends IdeaMetadata>(
 /** When a deleted Idea stops being restorable on this device. */
 export function purgeAt(record: IdeaDeletion): number {
   return record.deletedAt + RECENTLY_DELETED_RETENTION_MS;
+}
+
+/**
+ * How much of an Idea's restore window is left, for the Recently Deleted list.
+ * Part-days round up so the figure shown never understates how long the user
+ * really has; a window that has run out reads as a warning rather than a
+ * negative count, since purging is a separate sweep (motif-kka.8) that may not
+ * have run yet.
+ */
+export function formatRestoreWindow(purgeAt: number, now: number): string {
+  const days = Math.ceil((purgeAt - now) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "Deleting soon";
+  return days === 1 ? "1 day left" : `${days} days left`;
 }
 
 /**
