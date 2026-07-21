@@ -1,5 +1,6 @@
 import type {
   DeviceIdentity,
+  IdeaDeletion,
   IdeaMetadata,
   IdeaMetadataUpdate,
   IdeaSyncAck,
@@ -7,8 +8,9 @@ import type {
   IdeaUpdateAck,
   PairingRequest,
   PairingResponse,
+  SyncManifest,
 } from "@motif/shared";
-import { withMetadataDefaults } from "@motif/shared";
+import { mergeDeletions, withMetadataDefaults } from "@motif/shared";
 import { ideasToOffer, reconcileMetadata } from "./core/sync-engine";
 import type { BridgeEndpoint } from "./core/sync-engine";
 import { frameOffer } from "./core/sync-wire";
@@ -45,14 +47,25 @@ export async function requestPairing(
   return (await response.json()) as PairingResponse;
 }
 
-/** Fetches the ids Bridge already holds, so Capture offers only the rest. */
-export async function fetchManifest(endpoint: BridgeEndpoint): Promise<string[]> {
-  const response = await fetch(endpointUrl(endpoint, "/motif/manifest"));
+/**
+ * Posts this Capture's manifest to Bridge and returns Bridge's own — what each
+ * device holds and what it has deleted (ADR 0005). Bridge merges Capture's
+ * delete records before answering, so one round trip leaves both devices
+ * agreeing on what's deleted and tells Capture what still needs offering.
+ */
+export async function exchangeManifest(
+  endpoint: BridgeEndpoint,
+  manifest: SyncManifest,
+): Promise<SyncManifest> {
+  const response = await fetch(endpointUrl(endpoint, "/motif/manifest"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(manifest),
+  });
   if (!response.ok) {
-    throw new Error(`Manifest fetch failed (${response.status})`);
+    throw new Error(`Manifest exchange failed (${response.status})`);
   }
-  const manifest = (await response.json()) as { have?: string[] };
-  return manifest.have ?? [];
+  return (await response.json()) as SyncManifest;
 }
 
 /** Offers one Idea and its audio to Bridge, returning Bridge's ack. */
@@ -114,8 +127,18 @@ export interface SyncPlan {
   /** This Capture's identity, stamped on every offer. */
   readonly capture: DeviceIdentity;
   readonly library: readonly IdeaMetadata[];
+  /** This device's persisted delete/restore records, exchanged before offering. */
+  readonly deletions: readonly IdeaDeletion[];
   /** Reads an Idea's on-device audio bytes to upload. */
   readonly readAudio: (idea: IdeaMetadata) => Promise<Uint8Array>;
+}
+
+/** What one local-network sync pass changed, for the caller to persist. */
+export interface SyncResult {
+  /** Ids Bridge accepted this pass. */
+  readonly synced: string[];
+  /** The delete/restore records after merging Bridge's — persist these. */
+  readonly deletions: IdeaDeletion[];
 }
 
 export interface MetadataSyncPlan {
@@ -146,13 +169,23 @@ export async function syncMetadataWithBridge(
 }
 
 /**
- * Offers every Idea Bridge is missing, one at a time, and returns the ids
- * Bridge accepted. Diffs against Bridge's live manifest (via the tested
- * engine), so it's safe to call repeatedly — already-synced Ideas are skipped.
+ * One local-network sync pass: exchange manifests, then offer every Idea Bridge
+ * is missing, one at a time. The exchange comes first so a delete either device
+ * made while the other was offline is applied before any audio moves — that's
+ * what stops Capture uploading an Idea Bridge has just deleted (ADR 0005).
+ * Diffs against Bridge's live manifest (via the tested engine), so it's safe to
+ * call repeatedly — already-synced Ideas are skipped.
  */
-export async function syncPendingIdeas(plan: SyncPlan): Promise<string[]> {
-  const have = await fetchManifest(plan.endpoint);
-  const pending = ideasToOffer(plan.library, have);
+export async function syncPendingIdeas(plan: SyncPlan): Promise<SyncResult> {
+  const bridge = await exchangeManifest(plan.endpoint, {
+    kind: "sync-manifest",
+    from: plan.capture,
+    have: plan.library.map((idea) => idea.id),
+    deleted: [...plan.deletions],
+  });
+  const deletions = mergeDeletions(plan.deletions, bridge.deleted ?? []);
+
+  const pending = ideasToOffer(plan.library, bridge.have, deletions);
   const synced: string[] = [];
   for (const idea of pending) {
     const audio = await plan.readAudio(idea);
@@ -167,13 +200,15 @@ export async function syncPendingIdeas(plan: SyncPlan): Promise<string[]> {
       synced.push(ack.ideaId);
     }
   }
-  return synced;
+  return { synced, deletions };
 }
 
 export interface CloudSyncPlan {
   readonly idToken: string;
   readonly capture: DeviceIdentity;
   readonly library: readonly IdeaMetadata[];
+  /** As on {@link SyncPlan}: a deleted Idea is never uploaded. */
+  readonly deletions: readonly IdeaDeletion[];
   readonly readAudio: (idea: IdeaMetadata) => Promise<Uint8Array>;
 }
 
@@ -240,7 +275,7 @@ async function uploadCloudIdea(
  * offload may remove its on-device audio. Already-uploaded Ideas are untouched.
  */
 export async function ensureIdeaInCloud(
-  plan: Omit<CloudSyncPlan, "library" | "readAudio"> & {
+  plan: Omit<CloudSyncPlan, "library" | "deletions" | "readAudio"> & {
     readonly idea: IdeaMetadata;
     readonly audio: Uint8Array;
   },
@@ -277,7 +312,11 @@ export async function downloadCloudIdea(
  * caller is buggy. Capture keeps every local audio file after upload.
  */
 export async function syncPendingCloudIdeas(plan: CloudSyncPlan): Promise<string[]> {
-  const pending = ideasToOffer(plan.library, await fetchCloudManifest(plan.idToken));
+  const pending = ideasToOffer(
+    plan.library,
+    await fetchCloudManifest(plan.idToken),
+    plan.deletions,
+  );
   const synced: string[] = [];
   for (const idea of pending) {
     const accepted = await uploadCloudIdea(

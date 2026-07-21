@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IdeaMetadata } from "@motif/shared";
+import { markIdeaDeleted, markIdeaRestored } from "@motif/shared";
 import {
   ideaStorageAction,
   ideasToOffer,
@@ -163,6 +164,24 @@ describe("ideasToOffer — the copy-semantics sync diff", () => {
       idea("gone", 1, { storageState: "offloaded" }),
     ];
     expect(ideasToOffer(library, []).map((i) => i.id)).toEqual(["here"]);
+  });
+
+  it("never offers a deleted Idea — offering it would resurrect it on Bridge", () => {
+    const library = [idea("kept", 2), idea("deleted", 1)];
+    const deletions = markIdeaDeleted([], "deleted", 1_000);
+    expect(ideasToOffer(library, [], deletions).map((i) => i.id)).toEqual([
+      "kept",
+    ]);
+  });
+
+  it("offers a restored Idea again, so its audio can come back", () => {
+    const library = [idea("a", 1)];
+    const deletions = markIdeaRestored(
+      markIdeaDeleted([], "a", 1_000),
+      "a",
+      2_000,
+    );
+    expect(ideasToOffer(library, [], deletions).map((i) => i.id)).toEqual(["a"]);
   });
 
   it("does not mutate or reorder the caller's library (copy semantics)", () => {

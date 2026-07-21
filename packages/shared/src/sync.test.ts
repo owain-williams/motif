@@ -101,6 +101,7 @@ describe("sync message shapes", () => {
       kind: "sync-manifest",
       from: bridge,
       have: ["a", "b"],
+      deleted: [{ id: "c", deletedAt: 1_700_000_000_000, restoredAt: 0 }],
     };
     const offer: IdeaSyncOffer = {
       kind: "idea-sync-offer",

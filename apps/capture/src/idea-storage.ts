@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { withMetadataDefaults } from "@motif/shared";
-import type { IdeaMetadata, PersistedIdea } from "@motif/shared";
+import type { IdeaDeletion, IdeaMetadata, PersistedIdea } from "@motif/shared";
 import type { IdeaSharePlan } from "./core/idea-share";
 
 /**
@@ -25,6 +25,10 @@ function ideaAudioFile(ideaId: string, extension: string): File {
 
 function libraryManifest(): File {
   return new File(Paths.document, "library.json");
+}
+
+function deletionsManifest(): File {
+  return new File(Paths.document, "deletions.json");
 }
 
 function ideaWaveformFile(ideaId: string): File {
@@ -180,4 +184,32 @@ export function saveLibrary(ideas: readonly IdeaMetadata[]): void {
     manifest.create();
   }
   manifest.write(JSON.stringify(ideas));
+}
+
+/**
+ * Loads this device's delete/restore records, or an empty log if none exists
+ * yet or the file is corrupt. They live beside the Library rather than in it: a
+ * record outlives the Idea it refers to, since it must keep reaching a peer
+ * that hasn't applied the delete yet (ADR 0005).
+ */
+export async function loadDeletions(): Promise<IdeaDeletion[]> {
+  const file = deletionsManifest();
+  if (!file.exists) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(await file.text());
+    return Array.isArray(parsed) ? (parsed as IdeaDeletion[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Overwrites the persisted delete/restore records. */
+export function saveDeletions(deletions: readonly IdeaDeletion[]): void {
+  const file = deletionsManifest();
+  if (!file.exists) {
+    file.create();
+  }
+  file.write(JSON.stringify(deletions));
 }

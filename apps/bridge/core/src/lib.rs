@@ -250,6 +250,154 @@ pub fn merge_idea(local: &IdeaMetadata, incoming: &IdeaMetadata) -> IdeaMetadata
     merged
 }
 
+/// How long a deleted Idea stays restorable on this device before it may be
+/// purged (CONTEXT.md, ADR 0005). Mirror of `RECENTLY_DELETED_RETENTION_MS`.
+pub const RECENTLY_DELETED_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// This device's view of whether an Idea is deleted. Mirror of `IdeaDeletion`
+/// in `@motif/shared`. Both stamps are epoch ms and only move forward, so
+/// merging two devices' records is a per-field max — order-independent and
+/// repeatable. A record whose restore is the later stamp is kept rather than
+/// dropped: it's what stops a peer's older tombstone from re-deleting the Idea
+/// on the next exchange.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaDeletion {
+    pub id: String,
+    /// When this Idea was last deleted, on whichever device deleted it.
+    pub deleted_at: i64,
+    /// When it was last restored; `0` when it never has been. `#[serde(default)]`
+    /// so a log written before restore existed still loads.
+    #[serde(default)]
+    pub restored_at: i64,
+}
+
+impl IdeaDeletion {
+    /// Whether the deletion is the more recent of this record's two stamps.
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at > self.restored_at
+    }
+
+    /// When this device may purge the Idea for good (motif-kka.8).
+    pub fn purge_at(&self) -> i64 {
+        self.deleted_at
+            .saturating_add(RECENTLY_DELETED_RETENTION_MS)
+    }
+}
+
+/// This device's set of delete/restore records — the tombstones exchanged with
+/// a paired peer so a delete lands everywhere, however long a device was
+/// offline (ADR 0005). Mirror of the `deletion` module in `@motif/shared`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletionLog {
+    records: Vec<IdeaDeletion>,
+}
+
+impl DeletionLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Rebuilds a log from persisted records.
+    pub fn from_records(records: Vec<IdeaDeletion>) -> Self {
+        Self { records }
+    }
+
+    pub fn records(&self) -> &[IdeaDeletion] {
+        &self.records
+    }
+
+    fn find_mut(&mut self, id: &str) -> Option<&mut IdeaDeletion> {
+        self.records.iter_mut().find(|record| record.id == id)
+    }
+
+    /// Whether this device currently considers `id` deleted.
+    pub fn is_deleted(&self, id: &str) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.id == id && record.is_deleted())
+    }
+
+    /// Records a local delete, returning whether the log changed. Deleting an
+    /// already-deleted Idea is a no-op, so a re-delete never restarts the 30-day
+    /// window. The stamp is nudged past any restore this device knows about, so
+    /// a local action holds even if a peer's clock ran ahead.
+    pub fn mark_deleted(&mut self, id: &str, deleted_at: i64) -> bool {
+        match self.find_mut(id) {
+            Some(record) if record.is_deleted() => false,
+            Some(record) => {
+                record.deleted_at = deleted_at.max(record.restored_at.saturating_add(1));
+                true
+            }
+            None => {
+                self.records.push(IdeaDeletion {
+                    id: id.to_string(),
+                    deleted_at,
+                    restored_at: 0,
+                });
+                true
+            }
+        }
+    }
+
+    /// Records a local restore, returning whether the log changed. Restoring an
+    /// Idea that isn't deleted is a no-op; as with a delete, the stamp is nudged
+    /// past the deletion it undoes so it holds regardless of clock skew.
+    pub fn mark_restored(&mut self, id: &str, restored_at: i64) -> bool {
+        match self.find_mut(id) {
+            Some(record) if record.is_deleted() => {
+                record.restored_at = restored_at.max(record.deleted_at.saturating_add(1));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Merges a peer's records in, taking the later of each stamp per Idea.
+    /// Returns whether anything changed, so the caller knows to persist.
+    /// Idempotent: re-exchanging the same log reports no change.
+    pub fn merge(&mut self, incoming: &[IdeaDeletion]) -> bool {
+        let mut changed = false;
+        for record in incoming {
+            match self.find_mut(&record.id) {
+                Some(existing) => {
+                    let deleted_at = existing.deleted_at.max(record.deleted_at);
+                    let restored_at = existing.restored_at.max(record.restored_at);
+                    if deleted_at != existing.deleted_at || restored_at != existing.restored_at {
+                        existing.deleted_at = deleted_at;
+                        existing.restored_at = restored_at;
+                        changed = true;
+                    }
+                }
+                None => {
+                    self.records.push(record.clone());
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// The deletions whose grace period has elapsed by `now` — the Ideas this
+    /// device may purge for good (motif-kka.8). Restored Ideas never expire.
+    pub fn expired(&self, now: i64) -> Vec<&IdeaDeletion> {
+        self.records
+            .iter()
+            .filter(|record| record.is_deleted() && record.purge_at() <= now)
+            .collect()
+    }
+}
+
+/// A deleted Idea as shown in Recently Deleted, with when it stops being
+/// restorable on this device.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentlyDeletedIdea {
+    pub idea: IdeaMetadata,
+    pub deleted_at: i64,
+    pub purge_at: i64,
+}
+
 /// The on-device file extension for an Idea's audio, derived from its format —
 /// AAC lives in an `.m4a` container, WAV in `.wav`. Mirror of `audioExtension`
 /// in Capture's `recording-config`.
@@ -479,21 +627,33 @@ impl IdeaUpdateAck {
     }
 }
 
-/// Bridge telling Capture which Ideas it already holds. Mirror of `SyncManifest`.
+/// What a device holds and what it has deleted. Mirror of `SyncManifest`.
+/// Bridge serves one so Capture offers only the Ideas it's missing, and Capture
+/// posts one back so the two devices' delete records meet (ADR 0005). A peer on
+/// an older build sends no `deleted`, which `#[serde(default)]` reads as none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncManifest {
     pub kind: String,
     pub from: DeviceIdentity,
     pub have: Vec<String>,
+    #[serde(default)]
+    pub deleted: Vec<IdeaDeletion>,
 }
 
 impl SyncManifest {
-    fn new(from: DeviceIdentity, have: Vec<String>) -> Self {
+    /// Builds a manifest announcing what `from` holds and has deleted — either
+    /// direction of the exchange, since Capture posts one too.
+    pub fn from_device(
+        from: DeviceIdentity,
+        have: Vec<String>,
+        deleted: Vec<IdeaDeletion>,
+    ) -> Self {
         Self {
             kind: "sync-manifest".to_string(),
             from,
             have,
+            deleted,
         }
     }
 }
@@ -557,6 +717,7 @@ pub struct PairingStatus {
 pub struct SyncState {
     pairing: PairingState,
     library: BridgeLibrary,
+    deletions: DeletionLog,
     failed_pairing_attempts: u32,
     locked_until: Option<u64>,
 }
@@ -566,9 +727,17 @@ impl SyncState {
         Self {
             pairing,
             library,
+            deletions: DeletionLog::new(),
             failed_pairing_attempts: 0,
             locked_until: None,
         }
+    }
+
+    /// Restores the delete/restore records persisted by the shell, so a delete
+    /// survives a restart and is still exchanged with Capture afterwards.
+    pub fn with_deletions(mut self, deletions: DeletionLog) -> Self {
+        self.deletions = deletions;
+        self
     }
 
     pub fn identity(&self) -> &DeviceIdentity {
@@ -585,6 +754,71 @@ impl SyncState {
 
     pub fn library(&self) -> &BridgeLibrary {
         &self.library
+    }
+
+    pub fn deletions(&self) -> &DeletionLog {
+        &self.deletions
+    }
+
+    /// The Library the user sees: everything held minus everything deleted.
+    pub fn active_ideas(&self) -> Vec<IdeaMetadata> {
+        self.library
+            .ideas()
+            .iter()
+            .filter(|idea| !self.deletions.is_deleted(&idea.id))
+            .cloned()
+            .collect()
+    }
+
+    /// The Recently Deleted list, most recently deleted first. A record whose
+    /// Idea has already been purged is skipped — the record outlives the Idea so
+    /// peers still learn about the delete.
+    pub fn recently_deleted(&self) -> Vec<RecentlyDeletedIdea> {
+        let mut deleted: Vec<RecentlyDeletedIdea> = self
+            .deletions
+            .records()
+            .iter()
+            .filter(|record| record.is_deleted())
+            .filter_map(|record| {
+                self.library
+                    .ideas()
+                    .iter()
+                    .find(|idea| idea.id == record.id)
+                    .map(|idea| RecentlyDeletedIdea {
+                        idea: idea.clone(),
+                        deleted_at: record.deleted_at,
+                        purge_at: record.purge_at(),
+                    })
+            })
+            .collect();
+        deleted.sort_by_key(|entry| std::cmp::Reverse(entry.deleted_at));
+        deleted
+    }
+
+    /// Deletes an Idea on this device: soft, so its metadata and audio stay put
+    /// for the 30-day grace period and the tombstone can reach Capture on the
+    /// next exchange. Returns whether anything changed — an unknown or
+    /// already-deleted id changes nothing.
+    pub fn delete_idea(&mut self, id: &str, deleted_at: i64) -> bool {
+        self.library.has(id) && self.deletions.mark_deleted(id, deleted_at)
+    }
+
+    /// Restores a deleted Idea. Bridge still holds the audio inside the grace
+    /// period, so nothing needs re-fetching; the restore reaches Capture through
+    /// the same record exchange that carried the delete.
+    pub fn restore_idea(&mut self, id: &str, restored_at: i64) -> bool {
+        self.deletions.mark_restored(id, restored_at)
+    }
+
+    /// Merges the paired Capture's manifest into this device's records — the
+    /// receiving half of the delete exchange (ADR 0005). Gated on pairing like
+    /// every other inbound change; returns whether anything changed, so the
+    /// caller knows to persist.
+    pub fn apply_peer_manifest(&mut self, manifest: &SyncManifest) -> bool {
+        if !self.is_paired_with(&manifest.from.device_id) {
+            return false;
+        }
+        self.deletions.merge(&manifest.deleted)
     }
 
     pub fn is_paired(&self) -> bool {
@@ -659,10 +893,14 @@ impl SyncState {
     }
 
     /// Whether an offer would be accepted: it must come from the paired Capture
-    /// and name an Idea not already held (dedup). Pure — deciding changes
-    /// nothing (copy semantics).
+    /// and name an Idea neither already held (dedup) nor deleted here. The
+    /// deleted check keeps a Capture that hasn't yet learned of the delete from
+    /// resurrecting the Idea by re-offering it. Pure — deciding changes nothing
+    /// (copy semantics).
     pub fn would_accept(&self, offer: &IdeaSyncOffer) -> bool {
-        self.is_paired_with(&offer.from.device_id) && !self.library.has(&offer.idea.id)
+        self.is_paired_with(&offer.from.device_id)
+            && !self.library.has(&offer.idea.id)
+            && !self.deletions.is_deleted(&offer.idea.id)
     }
 
     /// Accepts an offered Idea into the Library, returning the ack. Idempotent:
@@ -706,8 +944,14 @@ impl SyncState {
         self.library.edit(id, edit, edited_at)
     }
 
-    /// The manifest Bridge reports to Capture: the ids it already holds.
+    /// The manifest Bridge reports to Capture: the ids it already holds (soft-
+    /// deleted ones included — it still has their audio, so Capture must not
+    /// re-offer them) plus its delete/restore records.
     pub fn manifest(&self) -> SyncManifest {
-        SyncManifest::new(self.pairing.identity.clone(), self.library.have_ids())
+        SyncManifest::from_device(
+            self.pairing.identity.clone(),
+            self.library.have_ids(),
+            self.deletions.records().to_vec(),
+        )
     }
 }

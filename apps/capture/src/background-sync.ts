@@ -4,7 +4,12 @@ import type { IdeaMetadata } from "@motif/shared";
 import { loadAuthTokens } from "./account-storage";
 import { loadAccount } from "./account-client";
 import { audioExtension } from "./recording-config";
-import { loadLibrary, readIdeaAudioBytes } from "./idea-storage";
+import {
+  loadDeletions,
+  loadLibrary,
+  readIdeaAudioBytes,
+  saveDeletions,
+} from "./idea-storage";
 import { syncPendingCloudIdeas, syncPendingIdeas } from "./idea-sync";
 import { loadSyncState } from "./sync-storage";
 import {
@@ -21,8 +26,9 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
   try {
     // A headless launch cannot use React state, so rebuild the complete sync plan
     // from durable Capture state every time the scheduler wakes us.
-    const [library, syncState, tokens] = await Promise.all([
+    const [library, deletions, syncState, tokens] = await Promise.all([
       loadLibrary(),
+      loadDeletions(),
       loadSyncState(),
       loadAuthTokens(),
     ]);
@@ -33,12 +39,16 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
     const bridge = syncState.pairedBridge;
     if (bridge) {
       transports.push(async () => {
-        await syncPendingIdeas({
+        // A headless pass still exchanges delete records, so a delete made on
+        // Bridge lands even if Capture is never opened (ADR 0005).
+        const result = await syncPendingIdeas({
           endpoint: bridge.endpoint,
           capture: syncState.capture,
           library,
+          deletions,
           readAudio,
         });
+        saveDeletions(result.deletions);
       });
     }
 
@@ -53,6 +63,7 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
           idToken,
           capture: syncState.capture,
           library,
+          deletions,
           readAudio,
         });
       });

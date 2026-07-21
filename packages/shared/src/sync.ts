@@ -1,3 +1,4 @@
+import type { IdeaDeletion } from "./deletion.js";
 import type { IdeaMetadata } from "./idea.js";
 
 /**
@@ -42,14 +43,23 @@ export interface PairingResponse {
 }
 
 /**
- * Bridge telling Capture which Ideas it already holds, so Capture offers only
- * the missing ones. The source of truth for what still needs syncing.
+ * What a device holds and what it has deleted — the source of truth for what
+ * still needs syncing. Bridge sends one so Capture offers only the Ideas it's
+ * missing; Capture sends one back so the two devices' delete records meet
+ * (ADR 0005). Both directions use this same message.
  */
 export interface SyncManifest {
   readonly kind: "sync-manifest";
   readonly from: DeviceIdentity;
-  /** Ids of Ideas Bridge already has. */
+  /** Ids of Ideas the sender already has. */
   readonly have: readonly string[];
+  /**
+   * The sender's per-Idea delete/restore records. Merging these is what
+   * propagates a delete (or a restore) to a peer that was offline when it
+   * happened. Optional because a peer on a build from before cross-device
+   * delete omits the field entirely — read it as "nothing deleted".
+   */
+  readonly deleted?: readonly IdeaDeletion[];
 }
 
 /** Envelope announcing an Idea available to be synced. */

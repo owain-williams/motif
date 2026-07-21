@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
-    BridgeLibrary, DeviceIdentity, DeviceRole, IdeaMetadata, PairingState, SyncState,
-    SYNC_PROTOCOL_VERSION,
+    BridgeLibrary, DeletionLog, DeviceIdentity, DeviceRole, IdeaDeletion, IdeaMetadata,
+    PairingState, SyncState, SYNC_PROTOCOL_VERSION,
 };
 
 #[derive(Default)]
@@ -21,6 +21,7 @@ struct RecordingSink {
     stored: Mutex<Vec<(String, Vec<u8>)>>,
     persisted_len: Mutex<usize>,
     persisted_pairing: Mutex<Option<PairingState>>,
+    persisted_deletions: Mutex<Vec<IdeaDeletion>>,
 }
 
 impl SyncSink for RecordingSink {
@@ -38,6 +39,10 @@ impl SyncSink for RecordingSink {
 
     fn persist_pairing(&self, pairing: &PairingState) {
         *self.persisted_pairing.lock().unwrap() = Some(pairing.clone());
+    }
+
+    fn persist_deletions(&self, deletions: &DeletionLog) {
+        *self.persisted_deletions.lock().unwrap() = deletions.records().to_vec();
     }
 }
 
@@ -89,8 +94,22 @@ fn framed_offer(json: &str, audio: &[u8]) -> Vec<u8> {
     out
 }
 
-#[test]
-fn syncs_an_idea_over_the_loopback_network() {
+/// A Capture-to-Bridge manifest: what Capture holds and what it has deleted.
+fn capture_manifest_body(have: &str, deleted: &str) -> String {
+    format!(
+        r#"{{"kind":"sync-manifest","from":{{"deviceId":"cap-1","displayName":"Pixel","role":"capture"}},"have":[{have}],"deleted":[{deleted}]}}"#
+    )
+}
+
+/// Binds the receiver on a free loopback port and serves it on a thread.
+fn start(state: Arc<Mutex<SyncState>>, sink: Arc<RecordingSink>) -> SocketAddr {
+    let server = SyncServer::bind("127.0.0.1:0", state, sink).unwrap();
+    let addr = server.local_addr().unwrap();
+    thread::spawn(move || server.serve_forever());
+    addr
+}
+
+fn fresh_bridge() -> Arc<Mutex<SyncState>> {
     let identity = DeviceIdentity {
         device_id: "br-1".into(),
         display_name: "Studio Mac".into(),
@@ -100,15 +119,17 @@ fn syncs_an_idea_over_the_loopback_network() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let state = Arc::new(Mutex::new(SyncState::new(
+    Arc::new(Mutex::new(SyncState::new(
         PairingState::new(identity, "424242".into(), now, None),
         BridgeLibrary::new(),
-    )));
-    let sink = Arc::new(RecordingSink::default());
+    )))
+}
 
-    let server = SyncServer::bind("127.0.0.1:0", state.clone(), sink.clone()).unwrap();
-    let addr = server.local_addr().unwrap();
-    thread::spawn(move || server.serve_forever());
+#[test]
+fn syncs_an_idea_over_the_loopback_network() {
+    let state = fresh_bridge();
+    let sink = Arc::new(RecordingSink::default());
+    let addr = start(state.clone(), sink.clone());
 
     // Wrong pairing code is rejected.
     let (status, body) = http(addr, "POST", "/motif/pair", pair_body("000000").as_bytes());
@@ -150,4 +171,75 @@ fn syncs_an_idea_over_the_loopback_network() {
     let (_, body) = http(addr, "POST", "/motif/ideas", &framed_offer(&json, audio));
     assert!(body.contains("\"accepted\":false"), "body: {body}");
     assert_eq!(sink.stored.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn exchanges_delete_records_with_capture_over_the_loopback_network() {
+    let state = fresh_bridge();
+    let sink = Arc::new(RecordingSink::default());
+    let addr = start(state.clone(), sink.clone());
+
+    http(addr, "POST", "/motif/pair", pair_body("424242").as_bytes());
+    let audio: &[u8] = b"FAKE-AAC-AUDIO-BYTES";
+    let json = offer_json("song", audio.len());
+    http(addr, "POST", "/motif/ideas", &framed_offer(&json, audio));
+
+    // Capture deletes the Idea and posts its records on the next connection.
+    let deleted = r#"{"id":"song","deletedAt":1700000001000,"restoredAt":0}"#;
+    let (status, body) = http(
+        addr,
+        "POST",
+        "/motif/manifest",
+        capture_manifest_body(r#""song""#, deleted).as_bytes(),
+    );
+    assert_eq!(status, 200);
+    // Bridge answers with its own manifest, now carrying the merged record —
+    // one round trip and both devices agree.
+    assert!(
+        body.contains(r#""deletedAt":1700000001000"#),
+        "body: {body}"
+    );
+    assert_eq!(sink.persisted_deletions.lock().unwrap().len(), 1);
+    assert!(state.lock().unwrap().deletions().is_deleted("song"));
+    assert!(state.lock().unwrap().active_ideas().is_empty());
+    // Soft delete: Bridge still holds the audio, so a restore needs no re-sync.
+    assert!(state.lock().unwrap().library().has("song"));
+
+    // A Capture that hasn't caught up cannot resurrect it by re-offering.
+    let (_, body) = http(addr, "POST", "/motif/ideas", &framed_offer(&json, audio));
+    assert!(body.contains("\"accepted\":false"), "body: {body}");
+
+    // Restoring on Capture rides the same exchange — no extra message.
+    let restored = r#"{"id":"song","deletedAt":1700000001000,"restoredAt":1700000002000}"#;
+    let (_, body) = http(
+        addr,
+        "POST",
+        "/motif/manifest",
+        capture_manifest_body(r#""song""#, restored).as_bytes(),
+    );
+    assert!(
+        body.contains(r#""restoredAt":1700000002000"#),
+        "body: {body}"
+    );
+    assert!(!state.lock().unwrap().deletions().is_deleted("song"));
+    assert_eq!(state.lock().unwrap().active_ideas().len(), 1);
+}
+
+#[test]
+fn a_manifest_from_an_unpaired_peer_changes_nothing() {
+    let state = fresh_bridge();
+    let sink = Arc::new(RecordingSink::default());
+    let addr = start(state.clone(), sink.clone());
+
+    let deleted = r#"{"id":"song","deletedAt":1700000001000,"restoredAt":0}"#;
+    let (status, body) = http(
+        addr,
+        "POST",
+        "/motif/manifest",
+        capture_manifest_body("", deleted).as_bytes(),
+    );
+    assert_eq!(status, 200);
+    assert!(body.contains(r#""deleted":[]"#), "body: {body}");
+    assert!(!state.lock().unwrap().deletions().is_deleted("song"));
+    assert!(sink.persisted_deletions.lock().unwrap().is_empty());
 }

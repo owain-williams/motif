@@ -1,5 +1,10 @@
-import { mergeIdea, sameEditableMetadata } from "@motif/shared";
-import type { IdeaMetadata, SyncTransportKind, Tier } from "@motif/shared";
+import { activeIdeas, mergeIdea, sameEditableMetadata } from "@motif/shared";
+import type {
+  IdeaDeletion,
+  IdeaMetadata,
+  SyncTransportKind,
+  Tier,
+} from "@motif/shared";
 
 /**
  * Capture-side sync engine — the device-free brain behind Free-tier
@@ -89,15 +94,18 @@ export function syncTransports(
  * The Ideas Capture should offer Bridge: every on-device Idea whose id Bridge
  * doesn't already report having, oldest first so a freshly paired Bridge fills
  * its Library in chronological order. Offloaded Ideas are skipped — their audio
- * isn't on the device to send. Returns a new array; the input Library is left
- * untouched (copy semantics).
+ * isn't on the device to send — and so are deleted ones, since offering an Idea
+ * this device has deleted would resurrect it on Bridge (ADR 0005). `deletions`
+ * defaults to none, the state of a device that has never deleted anything.
+ * Returns a new array; the input Library is left untouched (copy semantics).
  */
 export function ideasToOffer(
   library: readonly IdeaMetadata[],
   remoteHave: Iterable<string>,
+  deletions: readonly IdeaDeletion[] = [],
 ): IdeaMetadata[] {
   const have = new Set(remoteHave);
-  return library
+  return activeIdeas(library, deletions)
     .filter((idea) => idea.storageState === "on-device" && !have.has(idea.id))
     .sort((a, b) => a.capturedAt - b.capturedAt);
 }

@@ -5,6 +5,9 @@
 //! reaches Bridge over the LAN through these routes:
 //!
 //! - `GET  /motif/manifest` → the ids Bridge already holds ([`SyncManifest`]).
+//! - `POST /motif/manifest` → Capture's own [`SyncManifest`] → Bridge's, after
+//!   merging Capture's delete records into Bridge's (ADR 0005). One round trip
+//!   leaves both devices agreeing on what's deleted.
 //! - `GET  /motif/library`  → Bridge's full Library, so Capture can pull the
 //!   metadata edits Bridge originated and merge them (ADR 0006).
 //! - `POST /motif/pair`     → a [`PairingRequest`] JSON body → [`PairingResponse`].
@@ -25,8 +28,8 @@ use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    BridgeLibrary, IdeaMetadata, IdeaMetadataUpdate, IdeaSyncOffer, IdeaUpdateAck, PairingRequest,
-    PairingState, SyncState,
+    BridgeLibrary, DeletionLog, IdeaMetadata, IdeaMetadataUpdate, IdeaSyncOffer, IdeaUpdateAck,
+    PairingRequest, PairingState, SyncManifest, SyncState,
 };
 
 /// Where a receiver persists a synced Idea. Implemented by the Tauri shell
@@ -44,6 +47,11 @@ pub trait SyncSink: Send + Sync {
     /// Called after a successful pairing, so the shell can persist it. Sinks
     /// used only for cloud relay can keep the default no-op implementation.
     fn persist_pairing(&self, _pairing: &PairingState) {}
+
+    /// Called after the delete/restore records change, so the shell can persist
+    /// them. A tombstone must survive a restart — it's re-exchanged until every
+    /// paired device has applied the delete (ADR 0005).
+    fn persist_deletions(&self, _deletions: &DeletionLog) {}
 }
 
 /// The local-network sync receiver. Bind it, then run [`serve_forever`] on a
@@ -125,10 +133,30 @@ impl SyncServer {
                     Err(_) => write_status(&mut stream, "400 Bad Request"),
                 }
             }
+            ("POST", "/motif/manifest") => self.handle_manifest(&mut stream, &request.body),
             ("POST", "/motif/ideas") => self.handle_offer(&mut stream, &request.body),
             ("POST", "/motif/updates") => self.handle_update(&mut stream, &request.body),
             _ => write_status(&mut stream, "404 Not Found"),
         }
+    }
+
+    /// The delete exchange (ADR 0005): merges the paired Capture's delete/restore
+    /// records into Bridge's, then answers with Bridge's own manifest — computed
+    /// after the merge, so a single round trip leaves both devices agreeing.
+    /// Records from an unpaired peer are ignored, but the manifest is still
+    /// served (it's the same public read as `GET /motif/manifest`).
+    fn handle_manifest(&self, stream: &mut TcpStream, body: &[u8]) -> io::Result<()> {
+        let peer: SyncManifest = match serde_json::from_slice(body) {
+            Ok(manifest) => manifest,
+            Err(_) => return write_status(stream, "400 Bad Request"),
+        };
+        let mut state = self.state.lock().unwrap();
+        if state.apply_peer_manifest(&peer) {
+            self.sink.persist_deletions(state.deletions());
+        }
+        let payload = to_json(&state.manifest());
+        drop(state);
+        write_json(stream, "200 OK", &payload)
     }
 
     /// Merges a metadata-only edit from the paired Capture (ADR 0006). Unlike an

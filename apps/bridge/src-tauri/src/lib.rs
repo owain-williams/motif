@@ -13,9 +13,9 @@ use bridge_core::cloud_relay::{sync_from_cloud, HttpCloudRelay};
 use bridge_core::discovery::BridgeAdvertisement;
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
-    audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeviceIdentity,
-    DeviceRole, HandoffPlan, IdeaMetadata, IdeaMetadataEdit, PairingState, PairingStatus, SyncState,
-    PAIRING_CODE_LENGTH,
+    audio_extension, plan_handoff, sync_protocol_version, BridgeLibrary, DeletionLog,
+    DeviceIdentity, DeviceRole, HandoffPlan, IdeaDeletion, IdeaMetadata, IdeaMetadataEdit,
+    PairingState, PairingStatus, SyncState, PAIRING_CODE_LENGTH,
 };
 use tauri::{Manager, State};
 
@@ -50,12 +50,23 @@ fn write_library_manifest(manifest_path: &Path, library: &BridgeLibrary) {
     }
 }
 
+/// Writes the delete/restore records to disk. A tombstone must outlive a
+/// restart: it is re-exchanged until every paired device has applied the delete
+/// (ADR 0005). Best effort, like the Library manifest.
+fn write_deletions(path: &Path, deletions: &DeletionLog) {
+    if let Ok(json) = serde_json::to_vec(deletions.records()) {
+        let _ = fs::write(path, json);
+    }
+}
+
 /// Writes received Ideas to the app data directory: audio at `ideas/<id><ext>`
-/// (mirroring Capture's layout) and the Library manifest as `library.json`.
+/// (mirroring Capture's layout), the Library manifest as `library.json`, and the
+/// delete records as `deletions.json`.
 struct FsSink {
     audio_dir: PathBuf,
     manifest_path: PathBuf,
     pairing_path: PathBuf,
+    deletions_path: PathBuf,
 }
 
 impl SyncSink for FsSink {
@@ -74,6 +85,20 @@ impl SyncSink for FsSink {
     fn persist_pairing(&self, pairing: &PairingState) {
         let _ = persist_pairing(&self.pairing_path, pairing);
     }
+
+    fn persist_deletions(&self, deletions: &DeletionLog) {
+        write_deletions(&self.deletions_path, deletions);
+    }
+}
+
+/// Loads the persisted delete/restore records, or an empty log if none exists
+/// yet or the file is corrupt.
+fn load_deletions(path: &Path) -> DeletionLog {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<IdeaDeletion>>(&bytes).ok())
+        .map(DeletionLog::from_records)
+        .unwrap_or_default()
 }
 
 /// Loads the persisted Library, or an empty one if none exists yet / is corrupt.
@@ -282,10 +307,12 @@ pub fn run() {
             fs::create_dir_all(&data_dir)?;
             let manifest_path = data_dir.join("library.json");
             let pairing_path = data_dir.join("pairing.json");
+            let deletions_path = data_dir.join("deletions.json");
             let sink = Arc::new(FsSink {
                 audio_dir: data_dir.join("ideas"),
                 manifest_path: manifest_path.clone(),
                 pairing_path: pairing_path.clone(),
+                deletions_path: deletions_path.clone(),
             });
 
             let now = unix_timestamp_secs();
@@ -293,7 +320,8 @@ pub fn run() {
                 PairingState::new(bridge_identity(), generate_pairing_code(), now, None)
             });
             let identity = pairing.identity().clone();
-            let mut sync_state = SyncState::new(pairing, load_library(&manifest_path));
+            let mut sync_state = SyncState::new(pairing, load_library(&manifest_path))
+                .with_deletions(load_deletions(&deletions_path));
             if sync_state.pairing_status_at(now).expires_at <= now {
                 sync_state.rotate_pairing_code(generate_pairing_code(), now);
             }

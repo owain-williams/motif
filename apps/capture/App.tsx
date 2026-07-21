@@ -23,6 +23,7 @@ import {
   useAudioRecorder as useStudioAudioRecorder,
 } from "@siteed/audio-studio";
 import {
+  activeIdeas,
   availableRecordingChannels,
   createIdea,
   distinctFieldValues,
@@ -34,6 +35,7 @@ import {
   removeIdea,
   renameIdea,
   recordingProfile,
+  sameDeletions,
   sameEditableMetadata,
   searchLibrary,
   setIdeaStorageState,
@@ -41,6 +43,7 @@ import {
 } from "@motif/shared";
 import type {
   DeviceIdentity,
+  IdeaDeletion,
   IdeaMetadata,
   IdeaMetadataEdit,
   PairingRequest,
@@ -70,12 +73,14 @@ import {
   deleteIdeaAudio,
   deleteIdeaWaveform,
   ideaAudioUri,
+  loadDeletions,
   loadIdeaWaveforms,
   loadLibrary,
   persistIdeaAudioBytes,
   persistIdeaWaveform,
   persistRecordingAudio,
   readIdeaAudioBytes,
+  saveDeletions,
   saveLibrary,
   stageIdeaForShare,
 } from "./src/idea-storage";
@@ -197,6 +202,28 @@ export default function App() {
     libraryRef.current = library;
   }, [library]);
 
+  // This device's delete/restore records (ADR 0005). Held as state so the
+  // Library re-renders when a peer's delete lands, and mirrored in a ref so a
+  // sync pass always exchanges the latest without re-subscribing the timer.
+  const [deletions, setDeletions] = useState<readonly IdeaDeletion[]>([]);
+  const deletionsRef = useRef<readonly IdeaDeletion[]>(deletions);
+
+  useEffect(() => {
+    let active = true;
+    loadDeletions()
+      .then((records) => {
+        if (!active) return;
+        deletionsRef.current = records;
+        setDeletions(records);
+      })
+      .catch(() => {
+        // A missing/corrupt records file just means nothing is deleted.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     loadLibrary()
@@ -295,6 +322,17 @@ export default function App() {
     setLibrary(next);
   }, []);
 
+  /**
+   * Adopts the delete/restore records a sync pass merged, persisting only when
+   * they actually changed so an idle pass writes nothing.
+   */
+  const applyMergedDeletions = useCallback((merged: readonly IdeaDeletion[]) => {
+    if (sameDeletions(deletionsRef.current, merged)) return;
+    deletionsRef.current = merged;
+    saveDeletions(merged);
+    setDeletions(merged);
+  }, []);
+
   // Runs every path the tier allows. LAN remains preferred and independent:
   // a local failure never prevents a paid account from reaching cloud relay.
   const runSync = useCallback(
@@ -306,12 +344,16 @@ export default function App() {
 
     if (transports.includes("local-network") && inputs.bridge) {
       try {
-        const synced = await syncPendingIdeas({
+        // The pass exchanges delete records before offering audio, so a delete
+        // made on either device while the other was offline lands first.
+        const { synced, deletions: merged } = await syncPendingIdeas({
           endpoint: inputs.bridge.endpoint,
           capture: inputs.capture,
           library: inputs.library,
+          deletions: deletionsRef.current,
           readAudio,
         });
+        applyMergedDeletions(merged);
         statuses.push(
           synced.length > 0
             ? `${synced.length} to ${inputs.bridge.displayName}`
@@ -337,6 +379,7 @@ export default function App() {
           idToken: inputs.idToken,
           capture: inputs.capture,
           library: inputs.library,
+          deletions: deletionsRef.current,
           readAudio,
         });
         statuses.push(synced.length > 0 ? `${synced.length} via cloud` : "Cloud up to date");
@@ -347,7 +390,7 @@ export default function App() {
 
     setSyncStatus(statuses.join(" · ") || null);
     },
-    [applyMergedMetadata],
+    [applyMergedMetadata, applyMergedDeletions],
   );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
@@ -797,7 +840,9 @@ export default function App() {
     ]);
   }
 
-  const visibleLibrary = searchLibrary(library, searchQuery);
+  // Deleted Ideas drop out of the Library the moment a delete lands, here or
+  // from Bridge; their audio stays for the grace period (ADR 0005).
+  const visibleLibrary = searchLibrary(activeIdeas(library, deletions), searchQuery);
   const metadataSuggestions = {
     tags: distinctFieldValues(library, "tags"),
     instrument: distinctFieldValues(library, "instrument"),
