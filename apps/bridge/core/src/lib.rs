@@ -516,6 +516,14 @@ impl BridgeLibrary {
         Some(existing.clone())
     }
 
+    /// Removes an Idea for good, returning it so the caller can delete its
+    /// audio. `None` when no Idea has that id. Only the purge sweep calls this
+    /// — an ordinary delete is soft and leaves the Idea in place (ADR 0005).
+    pub fn remove(&mut self, id: &str) -> Option<IdeaMetadata> {
+        let index = self.ideas.iter().position(|idea| idea.id == id)?;
+        Some(self.ideas.remove(index))
+    }
+
     /// The ids Bridge already holds — the `have` set it reports to Capture.
     pub fn have_ids(&self) -> Vec<String> {
         self.ideas.iter().map(|i| i.id.clone()).collect()
@@ -808,6 +816,28 @@ impl SyncState {
     /// the same record exchange that carried the delete.
     pub fn restore_idea(&mut self, id: &str, restored_at: i64) -> bool {
         self.deletions.mark_restored(id, restored_at)
+    }
+
+    /// Purges every Idea whose 30-day window has elapsed by `now`, returning
+    /// the ones removed so the caller can delete their audio (motif-kka.8).
+    /// There is no server to schedule this (ADR 0005), so Bridge sweeps at
+    /// launch.
+    ///
+    /// The delete records stay: a record is the only thing that can still carry
+    /// the delete to a Capture offline since before the window, and that has to
+    /// hold "however long that takes" (CONTEXT.md). Keeping them is also what
+    /// makes this idempotent — the next sweep finds the Ideas already gone.
+    pub fn purge_expired(&mut self, now: i64) -> Vec<IdeaMetadata> {
+        let expired: Vec<String> = self
+            .deletions
+            .expired(now)
+            .into_iter()
+            .map(|record| record.id.clone())
+            .collect();
+        expired
+            .iter()
+            .filter_map(|id| self.library.remove(id))
+            .collect()
     }
 
     /// Merges the paired Capture's manifest into this device's records — the

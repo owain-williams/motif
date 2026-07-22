@@ -287,6 +287,28 @@ export async function ensureIdeaInCloud(
   }
 }
 
+/**
+ * Removes an Idea's copy from cloud storage for good — the cloud half of the
+ * purge sweep (motif-kka.8). The backend answers success for an Idea it doesn't
+ * hold, so an interrupted sweep is safe to retry.
+ */
+export async function deleteCloudIdea(
+  idToken: string,
+  ideaId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${MOTIF_API_URL}/relay/ideas/${encodeURIComponent(ideaId)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${idToken}` } },
+  );
+  // A Free account is refused the relay entirely, which is the same news as an
+  // empty one: it has no cloud storage, so there is no copy to purge. Anything
+  // else — an expired session, a network failure — leaves the Idea for the next
+  // sweep rather than dropping the record that would bring us back to it.
+  if (!response.ok && response.status !== 403) {
+    throw new Error(`Cloud Idea purge failed (${response.status})`);
+  }
+}
+
 /** Downloads an offloaded Idea's audio bytes through its short-lived URL. */
 export async function downloadCloudIdea(
   idToken: string,

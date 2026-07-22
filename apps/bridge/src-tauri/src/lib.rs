@@ -70,13 +70,19 @@ struct FsSink {
     deletions_path: PathBuf,
 }
 
+impl FsSink {
+    /// Where an Idea's received audio lives — the one place that spells out the
+    /// `ideas/<id><ext>` layout, so storing and purging can't drift apart.
+    fn audio_path(&self, idea: &IdeaMetadata) -> PathBuf {
+        self.audio_dir
+            .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)))
+    }
+}
+
 impl SyncSink for FsSink {
     fn store_audio(&self, idea: &IdeaMetadata, bytes: &[u8]) -> std::io::Result<()> {
         fs::create_dir_all(&self.audio_dir)?;
-        let file =
-            self.audio_dir
-                .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)));
-        fs::write(file, bytes)
+        fs::write(self.audio_path(idea), bytes)
     }
 
     fn persist_library(&self, library: &BridgeLibrary) {
@@ -100,6 +106,23 @@ fn load_deletions(path: &Path) -> DeletionLog {
         .and_then(|bytes| serde_json::from_slice::<Vec<IdeaDeletion>>(&bytes).ok())
         .map(DeletionLog::from_records)
         .unwrap_or_default()
+}
+
+/// Deletes the audio of every Idea whose 30-day Recently Deleted window has
+/// elapsed, then persists the Library without them (motif-kka.8). Nothing
+/// schedules this server-side (ADR 0005), so Bridge sweeps at launch. The
+/// delete records are deliberately left in place — see [`SyncState::purge_expired`].
+/// Best effort per file: one that won't delete still leaves the Idea gone from
+/// the Library, and the next sweep has nothing left to retry.
+fn purge_expired_ideas(sync: &mut SyncState, sink: &FsSink) {
+    let purged = sync.purge_expired(unix_timestamp_millis());
+    if purged.is_empty() {
+        return;
+    }
+    for idea in &purged {
+        let _ = fs::remove_file(sink.audio_path(idea));
+    }
+    sink.persist_library(sync.library());
 }
 
 /// Loads the persisted Library, or an empty one if none exists yet / is corrupt.
@@ -378,6 +401,7 @@ pub fn run() {
                 sync_state.rotate_pairing_code(generate_pairing_code(), now);
             }
             persist_pairing(&pairing_path, sync_state.pairing())?;
+            purge_expired_ideas(&mut sync_state, &sink);
             let sync = Arc::new(Mutex::new(sync_state));
 
             // Bind the receiver on the LAN — fixed port for a stable pairing

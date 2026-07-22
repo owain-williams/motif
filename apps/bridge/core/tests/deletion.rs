@@ -309,6 +309,88 @@ fn a_restored_idea_may_be_offered_again_so_its_audio_can_come_back() {
 }
 
 #[test]
+fn nothing_is_purged_before_the_window_elapses() {
+    let mut state = paired_state(vec![idea("a", 10)]);
+    state.delete_idea("a", T0);
+
+    let purged = state.purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS - 1);
+
+    assert!(purged.is_empty());
+    assert!(state.library().has("a"));
+    assert!(state.deletions().is_deleted("a"));
+}
+
+#[test]
+fn an_expired_idea_is_purged_from_the_library() {
+    let mut state = paired_state(vec![idea("a", 10), idea("b", 20)]);
+    state.delete_idea("a", T0);
+
+    let purged = state.purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS);
+
+    // The Idea comes back so the shell knows which audio file to delete.
+    assert_eq!(purged.len(), 1);
+    assert_eq!(purged[0].id, "a");
+    assert!(!state.library().has("a"));
+    assert!(state.library().has("b"));
+    // Nothing is left to list under Recently Deleted, but the record stays: it
+    // is still the only thing that can carry the delete to an absent Capture.
+    assert!(state.recently_deleted().is_empty());
+    assert!(state.deletions().is_deleted("a"));
+    assert_eq!(state.manifest().deleted.len(), 1);
+}
+
+#[test]
+fn a_purged_ideas_record_still_reaches_a_capture_absent_for_years() {
+    let mut state = paired_state(vec![idea("a", 10)]);
+    state.delete_idea("a", T0);
+    state.purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS);
+
+    // Whenever that Capture finally connects, the manifest still tells it.
+    let manifest = state.manifest();
+    assert_eq!(manifest.deleted[0].id, "a");
+    // And it cannot undo the delete by offering the Idea back.
+    let offer = IdeaSyncOffer {
+        from: capture_identity(),
+        idea: idea("a", 10),
+        audio_byte_length: 0,
+    };
+    assert!(!state.would_accept(&offer));
+}
+
+#[test]
+fn a_restored_idea_is_never_purged() {
+    let mut state = paired_state(vec![idea("a", 10)]);
+    state.delete_idea("a", T0);
+    state.restore_idea("a", T0 + DAY);
+
+    assert!(state.purge_expired(T0 + 365 * DAY).is_empty());
+    assert!(state.library().has("a"));
+}
+
+#[test]
+fn an_expired_record_for_an_idea_bridge_never_held_purges_nothing() {
+    let mut state = paired_state(Vec::new());
+    state.apply_peer_manifest(&capture_manifest(vec![tombstone("a", T0)]));
+
+    let purged = state.purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS);
+
+    assert!(purged.is_empty());
+    assert!(state.deletions().is_deleted("a"));
+}
+
+#[test]
+fn sweeping_again_after_a_purge_changes_nothing() {
+    let mut state = paired_state(vec![idea("a", 10)]);
+    state.delete_idea("a", T0);
+    state.purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS);
+
+    assert!(state
+        .purge_expired(T0 + RECENTLY_DELETED_RETENTION_MS + DAY)
+        .is_empty());
+    assert!(state.library().is_empty());
+}
+
+#[test]
 fn a_persisted_log_reloads_with_the_same_answers() {
     let mut log = DeletionLog::new();
     log.mark_deleted("a", T0);

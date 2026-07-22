@@ -100,6 +100,8 @@ export class MotifBackendStack extends Stack {
       'dynamodb:GetItem',
       'dynamodb:Query',
       'dynamodb:UpdateItem',
+      // Purging an expired Idea removes its row as well as its audio object.
+      'dynamodb:DeleteItem',
     );
     audioBucket.grantReadWrite(apiFn);
 
@@ -113,6 +115,7 @@ export class MotifBackendStack extends Stack {
           apigwv2.CorsHttpMethod.GET,
           apigwv2.CorsHttpMethod.POST,
           apigwv2.CorsHttpMethod.PUT,
+          apigwv2.CorsHttpMethod.DELETE,
           apigwv2.CorsHttpMethod.OPTIONS,
         ],
       },
@@ -155,7 +158,9 @@ export class MotifBackendStack extends Stack {
     });
     httpApi.addRoutes({
       path: '/relay/ideas/{id}',
-      methods: [apigwv2.HttpMethod.GET],
+      // DELETE purges an Idea whose Recently Deleted window has elapsed
+      // (motif-kka.8). No server-side cron exists, so the sweep is client-driven.
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
       integration,
       authorizer,
     });

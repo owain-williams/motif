@@ -223,3 +223,14 @@ export function expiredDeletions(
 ): IdeaDeletion[] {
   return log.filter((record) => isDeleted(record) && purgeAt(record) <= now);
 }
+
+/**
+ * A record outlives the Idea it stands for. Purging frees the audio, but the
+ * record is what still has to reach a device that was offline when the delete
+ * happened — "however long that takes" (CONTEXT.md, ADR 0005), which is longer
+ * than any window this device can measure. A peer reachable only after a year
+ * would otherwise keep the Idea in its Library for good, and re-offer it.
+ *
+ * That is why there is no way to forget one: the records are the cheap part
+ * (an id and two timestamps), and the guarantee is worth more than the bytes.
+ */

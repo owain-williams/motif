@@ -1,12 +1,14 @@
 'use strict';
 
 const {
+  DeleteItemCommand,
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
   UpdateItemCommand,
 } = require('@aws-sdk/client-dynamodb');
 const {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -20,6 +22,10 @@ function createHandler(services) {
   return async (event) => {
     const routeKey = event.routeKey || '';
     const rawPath = event.rawPath || event.requestContext?.http?.path || '/';
+    // `/relay/ideas/{id}` carries both GET and DELETE, so those two branches
+    // route on the method rather than the path alone — a DELETE answered by the
+    // download branch would quietly leave the copy it was asked to release.
+    const method = routeKey.split(' ')[0] || event.requestContext?.http?.method || '';
 
     if (routeKey === 'GET /health' || rawPath.endsWith('/health')) {
       return json(200, {
@@ -93,8 +99,19 @@ function createHandler(services) {
       });
     }
 
-    if (routeKey === 'GET /relay/ideas/{id}' || rawPath.startsWith('/relay/ideas/')) {
-      const id = event.pathParameters?.id ?? rawPath.slice('/relay/ideas/'.length);
+    // Purging an Idea whose Recently Deleted window has elapsed (motif-kka.8).
+    // Idempotent: a copy that isn't there is the state the caller asked for, so
+    // a sweep interrupted midway is safe to retry. Account-scoped like every
+    // other relay route, so one account can never purge another's audio.
+    if (isIdeaPath(rawPath) && method === 'DELETE') {
+      const id = ideaIdFrom(event, rawPath);
+      if (!validIdeaId(id)) return json(400, { error: 'invalid_idea_id' });
+      await services.relay.remove(claims.sub, id);
+      return json(200, { ideaId: id, deleted: true });
+    }
+
+    if (isIdeaPath(rawPath) && method === 'GET') {
+      const id = ideaIdFrom(event, rawPath);
       if (!validIdeaId(id)) return json(400, { error: 'invalid_idea_id' });
       const stored = await services.relay.get(claims.sub, id);
       if (!stored) return json(404, { error: 'idea_not_found' });
@@ -192,6 +209,19 @@ function productionServices() {
         }), { expiresIn: 900 });
         return { offer: parseJson(offerJson), downloadUrl };
       },
+      // Audio first: an orphaned metadata row is recoverable (the next purge
+      // retries it), an orphaned S3 object is not — nothing would list it.
+      // Both commands succeed on a key that isn't there, so retries are safe.
+      remove: async (sub, id) => {
+        await s3.send(new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: relayObjectKey(sub, id),
+        }));
+        await dynamo.send(new DeleteItemCommand({
+          TableName: tableName,
+          Key: ideaKey(sub, id),
+        }));
+      },
     },
   };
 }
@@ -206,6 +236,16 @@ function validOffer(offer) {
 
 function validIdeaId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+/** Whether `rawPath` addresses a single Idea, e.g. `/relay/ideas/<id>`. */
+function isIdeaPath(rawPath) {
+  return rawPath.startsWith('/relay/ideas/');
+}
+
+/** The Idea id from a single-Idea route, falling back to the raw path. */
+function ideaIdFrom(event, rawPath) {
+  return event.pathParameters?.id ?? rawPath.slice('/relay/ideas/'.length);
 }
 
 function profileKey(sub) {

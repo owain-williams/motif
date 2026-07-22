@@ -61,6 +61,7 @@ import {
   IDLE_SESSION,
 } from "./src/core/recording-session";
 import { planIdeaShare } from "./src/core/idea-share";
+import { purgeExpiredIdeas } from "./src/core/idea-purge";
 import {
   ideaStorageAction,
   isPaired,
@@ -76,6 +77,7 @@ import {
 } from "./src/recording-config";
 import {
   deleteIdeaAudio,
+  deleteIdeaWaveform,
   ideaAudioUri,
   loadDeletions,
   loadIdeaWaveforms,
@@ -89,6 +91,7 @@ import {
   stageIdeaForShare,
 } from "./src/idea-storage";
 import {
+  deleteCloudIdea,
   downloadCloudIdea,
   ensureIdeaInCloud,
   pushIdeaUpdate,
@@ -218,21 +221,23 @@ export default function App() {
   const [deletions, setDeletions] = useState<readonly IdeaDeletion[]>([]);
   const deletionsRef = useRef<readonly IdeaDeletion[]>(deletions);
 
-  useEffect(() => {
-    let active = true;
-    loadDeletions()
-      .then((records) => {
-        if (!active) return;
-        deletionsRef.current = records;
-        setDeletions(records);
-      })
-      .catch(() => {
-        // A missing/corrupt records file just means nothing is deleted.
-      });
-    return () => {
-      active = false;
-    };
+  /**
+   * Adopts delete/restore records — from a local delete or restore, or merged
+   * from Bridge. Merged into whatever this device holds *now* rather than
+   * replacing it: a sync pass reads the records before its uploads and reports
+   * back after, so a delete made meanwhile would otherwise be overwritten by
+   * the pass's stale copy. The merge is order-independent (ADR 0005), so the
+   * two can't disagree. Persists only on a real change, so an idle pass writes
+   * nothing.
+   */
+  const applyDeletions = useCallback((incoming: readonly IdeaDeletion[]) => {
+    const next = mergeDeletions(deletionsRef.current, incoming);
+    if (sameDeletions(deletionsRef.current, next)) return;
+    deletionsRef.current = next;
+    saveDeletions(next);
+    setDeletions(next);
   }, []);
+
 
   // Playback follows the active Library: whether the delete was made here or
   // arrived from Bridge, an Idea that leaves the Library stops playing.
@@ -244,18 +249,57 @@ export default function App() {
     }
   }, [deletions, playingId]);
 
+  // Loads the Library and its delete records together, then sweeps away
+  // anything whose 30-day window has elapsed (motif-kka.8) — nothing schedules
+  // that server-side (ADR 0005), so launch is when it runs. The sweep happens
+  // after the Library is on screen: what it removes has been out of the active
+  // Library for a month already, so there is nothing to wait for it to hide,
+  // and a slow cloud call must never hold the app on its loading state.
   useEffect(() => {
     let active = true;
-    loadLibrary()
-      .then(async (ideas) => {
-        const savedWaveforms = await loadIdeaWaveforms(ideas.map((idea) => idea.id));
-        if (active) {
-          setLibrary(ideas);
-          setWaveforms(savedWaveforms);
-        }
-      })
+    (async () => {
+      const [ideas, records, tokens] = await Promise.all([
+        loadLibrary(),
+        loadDeletions().catch(() => [] as IdeaDeletion[]),
+        loadAuthTokens().catch(() => null),
+      ]);
+      const savedWaveforms = await loadIdeaWaveforms(ideas.map((idea) => idea.id));
+      if (!active) return;
+      setLibrary(ideas);
+      setWaveforms(savedWaveforms);
+      applyDeletions(records);
+      setIsLoading(false);
+
+      const idToken = tokens?.idToken;
+      const swept = await purgeExpiredIdeas({
+        library: ideas,
+        deletions: records,
+        now: Date.now(),
+        io: {
+          deleteLocalCopy: (idea) => {
+            deleteIdeaAudio(idea.id, audioExtension(idea.audioFormat));
+            deleteIdeaWaveform(idea.id);
+          },
+          // With no session there is no way to reach cloud storage; anything
+          // left there by an account since signed out stays until it returns.
+          deleteCloudCopy: idToken
+            ? (idea) => deleteCloudIdea(idToken, idea.id)
+            : null,
+        },
+      });
+      if (swept.purged.length === 0 || !active) return;
+      // Ideas captured while the sweep ran must survive it, so the purged ones
+      // come out of the current Library rather than the snapshot it started on.
+      const purged = new Set(swept.purged);
+      const kept = libraryRef.current.filter((idea) => !purged.has(idea.id));
+      libraryRef.current = kept;
+      saveLibrary(kept);
+      setLibrary(kept);
+    })()
       .catch(() => {
-        // A missing/corrupt manifest just means an empty Library.
+        // A missing or corrupt manifest just means an empty Library — and,
+        // crucially, no sweep: purging against a Library that failed to load
+        // would save that emptiness over the real thing.
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -340,23 +384,6 @@ export default function App() {
     libraryRef.current = next;
     saveLibrary(next);
     setLibrary(next);
-  }, []);
-
-  /**
-   * Adopts delete/restore records — from a local delete or restore, or merged
-   * from Bridge. Merged into whatever this device holds *now* rather than
-   * replacing it: a sync pass reads the records before its uploads and reports
-   * back after, so a delete made meanwhile would otherwise be overwritten by
-   * the pass's stale copy. The merge is order-independent (ADR 0005), so the
-   * two can't disagree. Persists only on a real change, so an idle pass writes
-   * nothing.
-   */
-  const applyDeletions = useCallback((incoming: readonly IdeaDeletion[]) => {
-    const next = mergeDeletions(deletionsRef.current, incoming);
-    if (sameDeletions(deletionsRef.current, next)) return;
-    deletionsRef.current = next;
-    saveDeletions(next);
-    setDeletions(next);
   }, []);
 
   // Runs every path the tier allows. LAN remains preferred and independent:

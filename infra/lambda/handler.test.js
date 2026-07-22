@@ -89,6 +89,10 @@ function fakeServices() {
           downloadUrl: `https://download.example/${sub}/${id}`,
         };
       },
+      remove: async (sub, id) => {
+        ideas.delete(`${sub}/${id}`);
+        audio.delete(`${sub}/${id}`);
+      },
     },
   };
 }
@@ -158,6 +162,88 @@ test('two Capture devices on one paid account contribute to one relay Library', 
       new Set(['phone-idea', 'tablet-idea']),
     );
   }
+});
+
+test('purging an Idea removes its audio and its metadata from the relay', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services);
+  const offer = offerFromFrame(offerFrame('spent-idea', Buffer.from('audio')));
+  await uploadOffer(handler, 'basic', offer);
+
+  const purged = await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+    path: '/relay/ideas/spent-idea',
+    pathParameters: { id: 'spent-idea' },
+  }));
+
+  assert.equal(purged.statusCode, 200);
+  assert.deepEqual(JSON.parse(purged.body), { ideaId: 'spent-idea', deleted: true });
+  assert.deepEqual(JSON.parse((await handler(event('GET /relay/manifest', 'basic'))).body).have, []);
+  assert.equal(services.audio.has('account-1/spent-idea'), false);
+});
+
+test('purging an Idea the relay never had reports success, so a retry is safe', async () => {
+  const handler = createHandler(fakeServices());
+
+  const purged = await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+    path: '/relay/ideas/never-uploaded',
+    pathParameters: { id: 'never-uploaded' },
+  }));
+
+  assert.equal(purged.statusCode, 200);
+  assert.equal(JSON.parse(purged.body).deleted, true);
+});
+
+test('one account cannot purge another account\'s Idea', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services);
+  const offer = offerFromFrame(offerFrame('private-idea', Buffer.from('audio')));
+  await uploadOffer(handler, 'basic', offer, { accountSub: 'account-a' });
+
+  await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+    accountSub: 'account-b',
+    path: '/relay/ideas/private-idea',
+    pathParameters: { id: 'private-idea' },
+  }));
+
+  const owner = await handler(event('GET /relay/manifest', 'basic', {
+    accountSub: 'account-a',
+  }));
+  assert.deepEqual(JSON.parse(owner.body).have, ['private-idea']);
+});
+
+test('Free accounts cannot purge through the relay', async () => {
+  const handler = createHandler(fakeServices());
+
+  const purged = await handler(event('DELETE /relay/ideas/{id}', 'free', {
+    path: '/relay/ideas/some-idea',
+    pathParameters: { id: 'some-idea' },
+  }));
+
+  assert.equal(purged.statusCode, 403);
+});
+
+test('a delete never falls through to the download route', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services);
+  const offer = offerFromFrame(offerFrame('kept-idea', Buffer.from('audio')));
+  await uploadOffer(handler, 'basic', offer);
+
+  // A payload without routeKey must still be routed by method, or a DELETE
+  // would be answered by the GET branch and quietly leave the copy behind.
+  const purged = await handler({
+    ...event('DELETE /relay/ideas/{id}', 'basic', {
+      path: '/relay/ideas/kept-idea',
+      pathParameters: { id: 'kept-idea' },
+    }),
+    routeKey: undefined,
+    requestContext: {
+      http: { method: 'DELETE', path: '/relay/ideas/kept-idea' },
+      authorizer: { jwt: { claims: { sub: 'account-1', email: 'a@example.com' } } },
+    },
+  });
+
+  assert.equal(JSON.parse(purged.body).deleted, true);
+  assert.equal(services.ideas.has('account-1/kept-idea'), false);
 });
 
 test('paid relay Libraries remain isolated by account', async () => {

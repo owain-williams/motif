@@ -276,4 +276,11 @@ describe("expiredDeletions", () => {
     const log = markIdeaRestored(markIdeaDeleted([], "a", T0), "a", T0 + DAY);
     expect(expiredDeletions(log, T0 + 365 * DAY)).toEqual([]);
   });
+
+  it("keeps reporting a purged Idea, so a peer offline for years still hears", () => {
+    // The audio is long gone; the record is all that can still carry the
+    // delete to a device that has never been reachable since (ADR 0005).
+    const log = markIdeaDeleted([], "a", T0);
+    expect(expiredDeletions(log, T0 + 5 * 365 * DAY).map((r) => r.id)).toEqual(["a"]);
+  });
 });
