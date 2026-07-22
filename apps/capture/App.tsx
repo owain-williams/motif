@@ -97,6 +97,7 @@ import {
   pushIdeaUpdate,
   requestPairing,
   syncMetadataWithBridge,
+  syncMetadataWithCloud,
   syncPendingCloudIdeas,
   syncPendingIdeas,
 } from "./src/idea-sync";
@@ -435,7 +436,22 @@ export default function App() {
           deletions: deletionsRef.current,
           readAudio,
         });
+        // Reported before the metadata pass, as the LAN branch does: the audio
+        // that reached the cloud reached it whether or not the edits that
+        // follow do.
         statuses.push(synced.length > 0 ? `${synced.length} via cloud` : "Cloud up to date");
+        // Metadata reconciles over the relay too (motif-kka.9), so an edit made
+        // on either device propagates without the two ever sharing a LAN. Reads
+        // the live Library rather than this pass's snapshot, so an edit Bridge
+        // just handed us over the LAN reaches the account's other devices now
+        // instead of on the next pass.
+        applyMergedMetadata(
+          await syncMetadataWithCloud({
+            idToken: inputs.idToken,
+            capture: inputs.capture,
+            library: libraryRef.current,
+          }),
+        );
       } catch {
         statuses.push("Cloud unavailable");
       }

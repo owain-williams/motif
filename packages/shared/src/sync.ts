@@ -80,12 +80,16 @@ export interface IdeaSyncAck {
 }
 
 /**
- * A metadata-only edit propagated to a paired peer. Unlike an offer this carries
- * no audio — only the full updated {@link IdeaMetadata} (with its per-field
+ * A metadata-only edit propagated to a peer. Unlike an offer this carries no
+ * audio — only the full updated {@link IdeaMetadata} (with its per-field
  * timestamps) — and it flows in either direction: sync became bidirectional once
  * Bridge could edit metadata too (ADR 0006). The receiver merges it into the
  * Idea it already holds by per-field last-write-wins; an update for an Idea the
  * receiver doesn't have is ignored (its audio never arrived).
+ *
+ * The same message travels both transports: to a paired peer over the LAN, and
+ * through the account relay for Basic/Pro, where the backend merges it by the
+ * same rule so devices that never share a network still converge (motif-kka.9).
  */
 export interface IdeaMetadataUpdate {
   readonly kind: "idea-metadata-update";

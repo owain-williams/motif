@@ -16,9 +16,13 @@ serverless — no VPC, RDS, NAT, or bastion, so idle cost is ~$0.
 | S3 `motif-idea-audio-<acct>-<region>` | Account-scoped cloud-relay Idea audio |
 | API Gateway HTTP API + Lambda | Health, account profile/tier, and authenticated cloud-relay routes |
 
-Relay routes require a Cognito ID token and reject Free accounts: `GET
-/relay/manifest`, `POST /relay/ideas`, `POST /relay/ideas/{id}/complete`, and
-`GET /relay/ideas/{id}`. The authenticated API exchanges metadata and short-lived
+Relay routes require a Cognito ID token and reject Free accounts. Audio: `GET
+/relay/manifest`, `POST /relay/ideas`, `POST /relay/ideas/{id}/complete`, `GET
+/relay/ideas/{id}`, and `DELETE /relay/ideas/{id}` (the purge sweep, motif-kka.8).
+Metadata: `GET /relay/library` and `POST /relay/updates`, the cloud twin of
+Bridge's LAN pair — an edit pushed here is merged into the stored Idea by
+per-field last-write-wins (ADR 0006), so two devices that are never on the same
+network still converge. The authenticated API exchanges metadata and short-lived
 account-scoped S3 URLs; audio transfers directly to S3 so Pro WAV Ideas are not
 constrained by API Gateway's 10MB request limit. The Cognito account is the paid
 pairing boundary: every Capture using the same Basic/Pro account reads and

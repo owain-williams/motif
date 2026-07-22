@@ -250,6 +250,32 @@ pub fn merge_idea(local: &IdeaMetadata, incoming: &IdeaMetadata) -> IdeaMetadata
     merged
 }
 
+/// Whether two copies of an Idea carry identical editable metadata *and*
+/// per-field stamps — i.e. neither side has an edit the other is missing.
+/// Mirror of `sameEditableMetadata` in `@motif/shared`.
+pub fn same_editable_metadata(a: &IdeaMetadata, b: &IdeaMetadata) -> bool {
+    a.name == b.name
+        && a.tags == b.tags
+        && a.instrument == b.instrument
+        && a.style == b.style
+        && a.tempo == b.tempo
+        && a.location == b.location
+        && a.field_updated_at == b.field_updated_at
+}
+
+/// The outcome of reconciling this device's metadata against a peer's snapshot.
+/// The counterpart of `MetadataReconciliation` in Capture's sync engine, which
+/// hands back a merged Library because it reconciles a value; here the merge
+/// lands in the held Library as it goes, so `changed` is all the caller needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataReconciliation {
+    /// Whether merging the peer's copies changed this Library, so the caller
+    /// knows whether to persist.
+    pub changed: bool,
+    /// Merged Ideas whose local copy is ahead of the peer's, to push back.
+    pub to_push: Vec<IdeaMetadata>,
+}
+
 /// How long a deleted Idea stays restorable on this device before it may be
 /// purged (CONTEXT.md, ADR 0005). Mirror of `RECENTLY_DELETED_RETENTION_MS`.
 pub const RECENTLY_DELETED_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -473,7 +499,12 @@ impl BridgeLibrary {
     }
 
     pub fn has(&self, id: &str) -> bool {
-        self.ideas.iter().any(|i| i.id == id)
+        self.get(id).is_some()
+    }
+
+    /// The held Idea with this id, or `None` when the Library has no such Idea.
+    pub fn get(&self, id: &str) -> Option<&IdeaMetadata> {
+        self.ideas.iter().find(|i| i.id == id)
     }
 
     /// Adds an Idea, keeping the list newest-first. Returns `false` (leaving the
@@ -960,6 +991,37 @@ impl SyncState {
             return false;
         }
         self.library.merge(&update.idea)
+    }
+
+    /// Reconciles this Bridge's metadata with the account relay's snapshot,
+    /// making cloud metadata sync bidirectional (motif-kka.9). Unlike a LAN
+    /// update this needs no local pairing — the backend's account boundary is
+    /// the trust relationship, as it already is for a relay import.
+    ///
+    /// Every Idea both sides hold is merged per-field last-write-wins (ADR
+    /// 0006); any whose merged copy leaves the relay behind is returned to push
+    /// back. Ideas only one side holds are left alone: the relay can't serve an
+    /// Idea whose audio was never uploaded, and an Idea Bridge hasn't received
+    /// yet belongs to the audio-carrying import path.
+    pub fn reconcile_relay_metadata(&mut self, remote: &[IdeaMetadata]) -> MetadataReconciliation {
+        let mut reconciliation = MetadataReconciliation {
+            changed: false,
+            to_push: Vec::new(),
+        };
+        for incoming in remote {
+            if self.library.merge(incoming) {
+                reconciliation.changed = true;
+            }
+            // Absent means the peer holds an Idea this device doesn't, which the
+            // merge above already declined; there is nothing to send back.
+            let Some(merged) = self.library.get(&incoming.id) else {
+                continue;
+            };
+            if !same_editable_metadata(merged, incoming) {
+                reconciliation.to_push.push(merged.clone());
+            }
+        }
+        reconciliation
     }
 
     /// Applies a local metadata edit made on Bridge, returning the updated Idea

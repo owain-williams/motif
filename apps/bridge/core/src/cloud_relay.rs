@@ -5,16 +5,22 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::server::SyncSink;
-use crate::{IdeaSyncOffer, SyncState};
+use crate::{DeviceIdentity, IdeaMetadata, IdeaSyncOffer, SyncState};
 
 pub trait CloudRelaySource {
     /// Idea ids currently held by this account's relay.
     fn manifest(&self) -> Result<Vec<String>, String>;
     /// One length-framed Idea offer and its audio bytes.
     fn download(&self, id: &str) -> Result<Vec<u8>, String>;
+    /// The metadata the relay holds for every Idea on this account — the cloud
+    /// counterpart of Bridge's own `GET /motif/library`, so an edit made on a
+    /// device that is nowhere near this LAN still reaches Bridge.
+    fn library(&self) -> Result<Vec<IdeaMetadata>, String>;
+    /// Pushes one Bridge-side edit to the relay, returning whether it merged.
+    fn push_update(&self, from: &DeviceIdentity, idea: &IdeaMetadata) -> Result<bool, String>;
 }
 
 pub struct HttpCloudRelay {
@@ -46,6 +52,27 @@ impl HttpCloudRelay {
 #[derive(Deserialize)]
 struct RelayManifest {
     have: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RelayLibrary {
+    ideas: Vec<IdeaMetadata>,
+}
+
+#[derive(Deserialize)]
+struct RelayUpdateAck {
+    accepted: bool,
+}
+
+/// The wire form of an outbound metadata edit. Mirrors `IdeaMetadataUpdate` in
+/// `@motif/shared` including its `kind` discriminant, which the receive-side
+/// [`crate::IdeaMetadataUpdate`] ignores but the relay expects.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboundMetadataUpdate<'a> {
+    kind: &'static str,
+    from: &'a DeviceIdentity,
+    idea: &'a IdeaMetadata,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +118,31 @@ impl CloudRelaySource for HttpCloudRelay {
         frame.extend_from_slice(&audio);
         Ok(frame)
     }
+
+    fn library(&self) -> Result<Vec<IdeaMetadata>, String> {
+        self.get("/relay/library")?
+            .json::<RelayLibrary>()
+            .map(|library| library.ideas)
+            .map_err(|error| error.to_string())
+    }
+
+    fn push_update(&self, from: &DeviceIdentity, idea: &IdeaMetadata) -> Result<bool, String> {
+        self.client
+            .post(format!("{}/relay/updates", self.api_url))
+            .bearer_auth(&self.id_token)
+            .json(&OutboundMetadataUpdate {
+                kind: "idea-metadata-update",
+                from,
+                idea,
+            })
+            .send()
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .json::<RelayUpdateAck>()
+            .map(|ack| ack.accepted)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Imports every relay Idea Bridge does not already hold. The Library dedup is
@@ -132,6 +184,39 @@ pub fn sync_from_cloud(
     }
 
     Ok(imported)
+}
+
+/// Exchanges metadata edits with the account relay in both directions
+/// (motif-kka.9): pulls the relay's copies, merges each Idea Bridge also holds
+/// by per-field last-write-wins, and pushes back the ones whose local copy is
+/// ahead. Returns how many edits the relay accepted.
+///
+/// Metadata-only — no audio moves, so this is safe to run alongside
+/// [`sync_from_cloud`] and never disturbs where an Idea's audio lives. A push
+/// that fails ends the pass with the merge already persisted, so the next poll
+/// simply retries the remaining edits.
+pub fn sync_metadata_with_cloud(
+    source: &dyn CloudRelaySource,
+    state: &Arc<Mutex<SyncState>>,
+    sink: &dyn SyncSink,
+) -> Result<usize, String> {
+    let remote = source.library()?;
+    let (identity, reconciliation) = {
+        let mut state = state.lock().map_err(|_| "Library unavailable")?;
+        let reconciliation = state.reconcile_relay_metadata(&remote);
+        if reconciliation.changed {
+            sink.persist_library(state.library());
+        }
+        (state.identity().clone(), reconciliation)
+    };
+
+    let mut pushed = 0;
+    for idea in &reconciliation.to_push {
+        if source.push_update(&identity, idea)? {
+            pushed += 1;
+        }
+    }
+    Ok(pushed)
 }
 
 fn parse_frame(frame: &[u8]) -> Result<(IdeaSyncOffer, &[u8]), String> {

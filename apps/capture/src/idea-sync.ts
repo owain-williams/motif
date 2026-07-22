@@ -148,24 +148,37 @@ export interface MetadataSyncPlan {
 }
 
 /**
- * Reconciles metadata with Bridge in both directions: pulls Bridge's Library,
- * merges each shared Idea by per-field last-write-wins, pushes back any Idea
- * whose local copy is newer, and returns the merged Library for the caller to
- * persist. Metadata-only — audio is never touched, so this stays copy-safe.
+ * The bidirectional metadata reconciliation both transports share (ADR 0006):
+ * pull the peer's copies, merge each shared Idea by per-field last-write-wins,
+ * push back any Idea whose local copy is newer, and return the merged Library
+ * for the caller to persist. Only the two I/O steps differ between a paired
+ * Bridge and the account relay, so they are injected. Metadata-only — audio is
+ * never touched, so this stays copy-safe.
  */
+async function reconcileMetadataWithPeer(
+  capture: DeviceIdentity,
+  library: readonly IdeaMetadata[],
+  fetchRemote: () => Promise<IdeaMetadata[]>,
+  pushUpdate: (update: IdeaMetadataUpdate) => Promise<IdeaUpdateAck>,
+): Promise<IdeaMetadata[]> {
+  const remote = await fetchRemote();
+  const { merged, toPush } = reconcileMetadata(library, remote);
+  for (const idea of toPush) {
+    await pushUpdate({ kind: "idea-metadata-update", from: capture, idea });
+  }
+  return merged;
+}
+
+/** Reconciles metadata with the paired Bridge over the local network. */
 export async function syncMetadataWithBridge(
   plan: MetadataSyncPlan,
 ): Promise<IdeaMetadata[]> {
-  const remote = await fetchBridgeLibrary(plan.endpoint);
-  const { merged, toPush } = reconcileMetadata(plan.library, remote);
-  for (const idea of toPush) {
-    await pushIdeaUpdate(plan.endpoint, {
-      kind: "idea-metadata-update",
-      from: plan.capture,
-      idea,
-    });
-  }
-  return merged;
+  return reconcileMetadataWithPeer(
+    plan.capture,
+    plan.library,
+    () => fetchBridgeLibrary(plan.endpoint),
+    (update) => pushIdeaUpdate(plan.endpoint, update),
+  );
 }
 
 /**
@@ -307,6 +320,66 @@ export async function deleteCloudIdea(
   if (!response.ok && response.status !== 403) {
     throw new Error(`Cloud Idea purge failed (${response.status})`);
   }
+}
+
+/**
+ * Fetches the metadata the relay holds for this account's Ideas — the cloud
+ * counterpart of {@link fetchBridgeLibrary}. Ideas uploaded before the editable
+ * metadata schema are normalized, so they merge like any other.
+ */
+async function fetchCloudLibrary(idToken: string): Promise<IdeaMetadata[]> {
+  const response = await fetch(`${MOTIF_API_URL}/relay/library`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Cloud library fetch failed (${response.status})`);
+  }
+  const { ideas } = (await response.json()) as { ideas?: unknown };
+  return Array.isArray(ideas)
+    ? ideas.map((idea) => withMetadataDefaults(idea as IdeaMetadata))
+    : [];
+}
+
+/** Pushes one metadata-only edit to the relay, returning its ack. */
+async function pushCloudIdeaUpdate(
+  idToken: string,
+  update: IdeaMetadataUpdate,
+): Promise<IdeaUpdateAck> {
+  const response = await fetch(`${MOTIF_API_URL}/relay/updates`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(update),
+  });
+  if (!response.ok) {
+    throw new Error(`Cloud Idea update failed (${response.status})`);
+  }
+  return (await response.json()) as IdeaUpdateAck;
+}
+
+export interface CloudMetadataSyncPlan {
+  readonly idToken: string;
+  readonly capture: DeviceIdentity;
+  readonly library: readonly IdeaMetadata[];
+}
+
+/**
+ * Reconciles metadata through the account relay (motif-kka.9) — the cloud twin
+ * of {@link syncMetadataWithBridge}, and what carries an edit between devices
+ * that are never on the same LAN. The relay merges per-field too, so neither
+ * side's edit is lost on the way.
+ */
+export async function syncMetadataWithCloud(
+  plan: CloudMetadataSyncPlan,
+): Promise<IdeaMetadata[]> {
+  return reconcileMetadataWithPeer(
+    plan.capture,
+    plan.library,
+    () => fetchCloudLibrary(plan.idToken),
+    (update) => pushCloudIdeaUpdate(plan.idToken, update),
+  );
 }
 
 /** Downloads an offloaded Idea's audio bytes through its short-lived URL. */

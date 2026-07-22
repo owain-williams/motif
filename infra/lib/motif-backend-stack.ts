@@ -150,6 +150,21 @@ export class MotifBackendStack extends Stack {
       integration,
       authorizer,
     });
+    // The metadata half of the relay (motif-kka.9), mirroring the LAN pair
+    // `GET /motif/library` + `POST /motif/updates`: peers pull the account's
+    // Idea metadata and push their own edits, merged per-field (ADR 0006).
+    httpApi.addRoutes({
+      path: '/relay/library',
+      methods: [apigwv2.HttpMethod.GET],
+      integration,
+      authorizer,
+    });
+    httpApi.addRoutes({
+      path: '/relay/updates',
+      methods: [apigwv2.HttpMethod.POST],
+      integration,
+      authorizer,
+    });
     httpApi.addRoutes({
       path: '/relay/ideas',
       methods: [apigwv2.HttpMethod.POST],

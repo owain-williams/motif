@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bridge_core::cloud_relay::{sync_from_cloud, HttpCloudRelay};
+use bridge_core::cloud_relay::{sync_from_cloud, sync_metadata_with_cloud, HttpCloudRelay};
 use bridge_core::discovery::BridgeAdvertisement;
 use bridge_core::server::{SyncServer, SyncSink};
 use bridge_core::{
@@ -432,6 +432,11 @@ pub fn run() {
                 if let Some(token) = token {
                     let relay = HttpCloudRelay::new(CLOUD_API_URL, token);
                     let _ = sync_from_cloud(&relay, &relay_sync, relay_sink.as_ref());
+                    // Then the metadata pass, so an edit made on a Capture that
+                    // is nowhere near this LAN still lands (motif-kka.9). It
+                    // runs after the import so a just-arrived Idea is already
+                    // held and can take its edits in the same poll.
+                    let _ = sync_metadata_with_cloud(&relay, &relay_sync, relay_sink.as_ref());
                 }
                 std::thread::sleep(CLOUD_SYNC_INTERVAL);
             });

@@ -89,12 +89,73 @@ function fakeServices() {
           downloadUrl: `https://download.example/${sub}/${id}`,
         };
       },
+      library: async (sub) => [...ideas.entries()]
+        .filter(([key]) => key.startsWith(`${sub}/`))
+        .map(([, offerJson]) => offerJson),
+      offer: async (sub, id) => ideas.get(`${sub}/${id}`) ?? null,
+      saveOffer: async (sub, id, offerJson) => {
+        ideas.set(`${sub}/${id}`, offerJson);
+      },
       remove: async (sub, id) => {
         ideas.delete(`${sub}/${id}`);
         audio.delete(`${sub}/${id}`);
       },
     },
   };
+}
+
+/** An Idea carrying the editable metadata and per-field stamps of ADR 0006. */
+function relayIdea(id, overrides = {}) {
+  return {
+    id,
+    name: 'Cloud Idea',
+    capturedAt: 1700000000000,
+    durationMs: 4200,
+    audioFormat: 'aac',
+    channels: 1,
+    storageState: 'on-device',
+    tags: [],
+    instrument: [],
+    style: [],
+    tempo: null,
+    location: null,
+    ...overrides,
+    fieldUpdatedAt: {
+      name: 1700000000000,
+      tags: 0,
+      instrument: 0,
+      style: 0,
+      tempo: 0,
+      location: 0,
+      ...overrides.fieldUpdatedAt,
+    },
+  };
+}
+
+function offerFor(idea, deviceId = 'capture-1') {
+  return {
+    kind: 'idea-sync-offer',
+    from: { deviceId, displayName: deviceId, role: 'capture' },
+    idea,
+    audioByteLength: 11,
+  };
+}
+
+function updateEvent(tier, idea, options = {}) {
+  return event('POST /relay/updates', tier, {
+    ...options,
+    body: JSON.stringify({
+      kind: 'idea-metadata-update',
+      from: { deviceId: options.deviceId ?? 'capture-1', displayName: 'Capture', role: 'capture' },
+      idea,
+    }),
+  });
+}
+
+async function relayLibrary(handler, tier, options = {}) {
+  const response = await handler(event('GET /relay/library', tier, options));
+  assert.equal(response.statusCode, 200);
+  return JSON.parse(response.body).ideas;
 }
 
 test('Free accounts cannot access the cloud relay', async () => {
@@ -244,6 +305,178 @@ test('a delete never falls through to the download route', async () => {
 
   assert.equal(JSON.parse(purged.body).deleted, true);
   assert.equal(services.ideas.has('account-1/kept-idea'), false);
+});
+
+test('an edit pushed to the relay reaches peers that pull the Library', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('edited-idea')));
+
+  const ack = await handler(updateEvent('basic', relayIdea('edited-idea', {
+    tags: ['riff'],
+    tempo: 120,
+    fieldUpdatedAt: { tags: 1700000009000, tempo: 1700000009000 },
+  })));
+
+  assert.equal(ack.statusCode, 200);
+  assert.deepEqual(JSON.parse(ack.body), {
+    kind: 'idea-update-ack',
+    ideaId: 'edited-idea',
+    accepted: true,
+  });
+  const [stored] = await relayLibrary(handler, 'basic');
+  assert.deepEqual(stored.tags, ['riff']);
+  assert.equal(stored.tempo, 120);
+  assert.equal(stored.fieldUpdatedAt.tags, 1700000009000);
+});
+
+test('an edit also reaches a device that downloads the Idea for the first time', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('renamed-idea')));
+
+  await handler(updateEvent('basic', relayIdea('renamed-idea', {
+    name: 'Chorus riff',
+    fieldUpdatedAt: { name: 1700000009000 },
+  })));
+
+  const downloaded = await handler(event('GET /relay/ideas/{id}', 'basic', {
+    path: '/relay/ideas/renamed-idea',
+    pathParameters: { id: 'renamed-idea' },
+  }));
+  const descriptor = JSON.parse(downloaded.body);
+  assert.equal(descriptor.offer.idea.name, 'Chorus riff');
+  // The audio contract must survive a metadata-only edit, or the frame the
+  // downloader builds from this offer would no longer match its bytes.
+  assert.equal(descriptor.offer.audioByteLength, 11);
+});
+
+test('the relay merges edits per field, so a stale field never clobbers a newer one', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('shared-idea')));
+
+  // Bridge renames while offline; Capture adds a tag afterwards but still holds
+  // the old name. Each field takes whichever edit is newer (ADR 0006).
+  await handler(updateEvent('basic', relayIdea('shared-idea', {
+    name: 'Verse idea',
+    fieldUpdatedAt: { name: 1700000002000 },
+  })));
+  await handler(updateEvent('basic', relayIdea('shared-idea', {
+    name: 'Cloud Idea',
+    tags: ['drums'],
+    fieldUpdatedAt: { name: 1700000001000, tags: 1700000003000 },
+  })));
+
+  const [stored] = await relayLibrary(handler, 'basic');
+  assert.equal(stored.name, 'Verse idea');
+  assert.deepEqual(stored.tags, ['drums']);
+});
+
+test('an Idea uploaded before the metadata schema still merges edits', async () => {
+  const handler = createHandler(fakeServices());
+  // The pre-metadata offer shape: no tags, no per-field stamps.
+  await uploadOffer(handler, 'basic', offerFromFrame(offerFrame('legacy-idea', Buffer.from('audio bytes'))));
+
+  // An edit older than the capture instant loses the name (it was set then),
+  // but wins every field that has never been edited.
+  await handler(updateEvent('basic', relayIdea('legacy-idea', {
+    name: 'Stale name',
+    tags: ['loop'],
+    fieldUpdatedAt: { name: 1699999999000, tags: 1699999999000 },
+  })));
+
+  const [stored] = await relayLibrary(handler, 'basic');
+  assert.equal(stored.name, 'Cloud Idea');
+  assert.deepEqual(stored.tags, ['loop']);
+});
+
+test('an edit to an Idea the relay never received is refused, not invented', async () => {
+  const handler = createHandler(fakeServices());
+
+  const ack = await handler(updateEvent('basic', relayIdea('never-uploaded', {
+    tags: ['ghost'],
+    fieldUpdatedAt: { tags: 1700000009000 },
+  })));
+
+  assert.equal(ack.statusCode, 200);
+  assert.equal(JSON.parse(ack.body).accepted, false);
+  assert.deepEqual(await relayLibrary(handler, 'basic'), []);
+});
+
+test('one account cannot edit another account\'s Idea', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('private-idea')), {
+    accountSub: 'account-a',
+  });
+
+  const ack = await handler(updateEvent('basic', relayIdea('private-idea', {
+    name: 'Stolen',
+    fieldUpdatedAt: { name: 1700000009000 },
+  }), { accountSub: 'account-b' }));
+
+  assert.equal(JSON.parse(ack.body).accepted, false);
+  const [owned] = await relayLibrary(handler, 'basic', { accountSub: 'account-a' });
+  assert.equal(owned.name, 'Cloud Idea');
+});
+
+test('Free accounts cannot read or write relay metadata', async () => {
+  const handler = createHandler(fakeServices());
+
+  const library = await handler(event('GET /relay/library', 'free'));
+  const pushed = await handler(updateEvent('free', relayIdea('some-idea')));
+
+  assert.equal(library.statusCode, 403);
+  assert.equal(pushed.statusCode, 403);
+});
+
+test('a malformed metadata update is rejected rather than stored', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+
+  const response = await handler(event('POST /relay/updates', 'basic', {
+    body: JSON.stringify({ kind: 'idea-metadata-update', from: {}, idea: { id: '../other' } }),
+  }));
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(JSON.parse(response.body).error, 'invalid_idea_update');
+});
+
+test('an edit missing an editable field can never leave an unreadable Idea behind', async () => {
+  // The merge copies a winning field straight into the stored Idea, and both
+  // the metadata *and* the audio-download routes serve that same record — so a
+  // push carrying a newer stamp but no value would wedge the whole account.
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+
+  const malformed = [
+    // `undefined` disappears in JSON, so this arrives as an Idea with no name.
+    { name: undefined, fieldUpdatedAt: { name: 1700000009000 } },
+    { tags: 'riff', fieldUpdatedAt: { tags: 1700000009000 } },
+    { tags: [{ not: 'a string' }], fieldUpdatedAt: { tags: 1700000009000 } },
+    { tempo: 'fast', fieldUpdatedAt: { tempo: 1700000009000 } },
+    { location: { lat: 'north', lon: 0, label: '' }, fieldUpdatedAt: { location: 1700000009000 } },
+  ];
+  for (const overrides of malformed) {
+    const response = await handler(updateEvent('basic', relayIdea('guarded-idea', overrides)));
+    assert.equal(response.statusCode, 400, `expected a rejection for ${JSON.stringify(overrides)}`);
+  }
+
+  const [stored] = await relayLibrary(handler, 'basic');
+  assert.equal(stored.name, 'Cloud Idea');
+  assert.deepEqual(stored.tags, []);
+  assert.equal(stored.tempo, null);
+  assert.equal(stored.location, null);
+});
+
+test('an edit stamped with a nonsense clock never wins a field', async () => {
+  const handler = createHandler(fakeServices());
+  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+
+  await handler(updateEvent('basic', relayIdea('guarded-idea', {
+    instrument: ['ghost'],
+    fieldUpdatedAt: { instrument: 'soon' },
+  })));
+
+  const [stored] = await relayLibrary(handler, 'basic');
+  assert.deepEqual(stored.instrument, []);
 });
 
 test('paid relay Libraries remain isolated by account', async () => {
