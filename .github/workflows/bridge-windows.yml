@@ -1,0 +1,68 @@
+name: Build Bridge (Windows)
+
+# Builds the Motif Bridge desktop app (Tauri) for Windows and uploads the
+# installers as downloadable artifacts. Run it by hand from the Actions tab
+# ("Run workflow"), or it fires automatically when you push a bridge-v* tag.
+#
+# Why CI: Tauri's Windows installers (NSIS .exe + WiX .msi) can only be built
+# on Windows, so a windows-latest runner stands in for a Windows machine.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "bridge-v*"
+
+# A newer run for the same ref cancels an in-flight one.
+concurrency:
+  group: bridge-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm must be set up before Node so setup-node's pnpm cache can find the
+      # store. Version comes from the root package.json "packageManager" field.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Set up Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      # Caches apps/bridge/target keyed on Cargo.lock so Rust rebuilds are fast.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/bridge
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      # @motif/shared must be built before Bridge's frontend typechecks/builds
+      # it (Tauri's beforeBuildCommand runs `pnpm build` inside apps/bridge).
+      - name: Build shared package
+        run: pnpm --filter @motif/shared build
+
+      - name: Build Bridge (tauri build)
+        run: pnpm --filter @motif/bridge app:build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: motif-bridge-windows
+          # Cargo workspace root is apps/bridge, so target/ lives there
+          # (not under src-tauri/).
+          path: |
+            apps/bridge/target/release/bundle/nsis/*.exe
+            apps/bridge/target/release/bundle/msi/*.msi
+          if-no-files-found: error
