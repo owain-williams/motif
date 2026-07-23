@@ -1,0 +1,76 @@
+name: Build Bridge (desktop)
+
+# Builds the Motif Bridge desktop app (Tauri) for macOS and Windows and uploads
+# the installers as downloadable artifacts. Run it by hand from the Actions tab
+# ("Run workflow"), or it fires automatically when you push a bridge-v* tag.
+#
+# Neither platform needs signing secrets to produce an installable artifact
+# (they're just unsigned, so the OS shows an "unidentified developer" prompt).
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "bridge-v*"
+
+concurrency:
+  group: bridge-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos
+            artifacts: |
+              apps/bridge/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            platform: windows
+            artifacts: |
+              apps/bridge/target/release/bundle/nsis/*.exe
+              apps/bridge/target/release/bundle/msi/*.msi
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm before Node so setup-node's pnpm cache can find the store.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # pnpm 11.13.1 (from packageManager) needs Node >= 22.13.
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/bridge
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      # @motif/shared must be built before Bridge's frontend consumes it
+      # (Tauri's beforeBuildCommand runs `pnpm build` inside apps/bridge).
+      - name: Build shared package
+        run: pnpm --filter @motif/shared build
+
+      - name: Build Bridge (tauri build)
+        run: pnpm --filter @motif/bridge app:build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: motif-bridge-${{ matrix.platform }}
+          # Cargo workspace root is apps/bridge, so target/ lives there.
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
