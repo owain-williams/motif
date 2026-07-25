@@ -1,209 +1,218 @@
 import { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { formatDuration, ideaMetadataLabels } from "@motif/shared";
+import { formatDuration } from "@motif/shared";
 import type { IdeaMetadata } from "@motif/shared";
-import type { IdeaStorageAction } from "../core/sync-engine";
 import { ideaWaveform } from "../core/idea-waveform";
+import { formatCapturedAt } from "../core/capture-time";
+import { colors, fonts, radii } from "../theme";
+import { CloudIcon, MoreIcon, PauseIcon, PlayIcon, QueuedIcon } from "./Icon";
 import { Waveform } from "./Waveform";
 
 /**
- * One Library entry: a waveform alongside the Idea's name and duration, with
- * playback on tap and rename/delete affordances. Purely presentational — all
- * state and side effects are the parent's (App) job.
+ * One Library entry: play control, name, and a metadata line that says how long
+ * the Idea is, when it was captured, what it's tagged with and whether it has
+ * reached another device yet. Its waveform doubles as the playback position.
+ *
+ * Everything past playing is behind the row's actions button, so a Library
+ * scrolls as a list of Ideas rather than a list of controls. Purely
+ * presentational — all state and side effects are App's job.
  */
+
+/** How many Tags a row shows before it stops competing with the name. */
+const VISIBLE_TAGS = 2;
+
 export function LibraryRow({
   idea,
   isPlaying,
+  progress,
+  queued,
   waveformPeaks,
-  onPlayToggle,
-  storageAction,
+  now,
   disabled,
-  onShare,
-  onStorageAction,
-  onRename,
-  onEditMetadata,
-  onDelete,
+  onPlayToggle,
+  onOpenActions,
 }: {
   idea: IdeaMetadata;
   isPlaying: boolean;
+  /** Playback position in [0, 1]; only meaningful while playing. */
+  progress: number;
+  /** Still waiting to reach a paired device. */
+  queued: boolean;
   waveformPeaks?: readonly number[];
-  storageAction: IdeaStorageAction | null;
+  /** The instant to read "Today"/"Yesterday" against. */
+  now: number;
   disabled: boolean;
   onPlayToggle: () => void;
-  onShare: () => void;
-  onStorageAction: () => void;
-  onRename: () => void;
-  onEditMetadata: () => void;
-  onDelete: () => void;
+  onOpenActions: () => void;
 }) {
   const bars = useMemo(
     () => ideaWaveform(idea.id, waveformPeaks),
     [idea.id, waveformPeaks],
   );
-
-  const metadataSummary = useMemo(() => ideaMetadataLabels(idea), [idea]);
+  const captured = useMemo(
+    () => formatCapturedAt(idea.capturedAt, now),
+    [idea.capturedAt, now],
+  );
+  const offloaded = idea.storageState === "offloaded";
+  const tags = idea.tags.slice(0, VISIBLE_TAGS);
+  const overflowTags = idea.tags.length - tags.length;
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={
-        idea.storageState === "offloaded"
-          ? `${idea.name}, cloud only`
-          : isPlaying
-            ? `Pause ${idea.name}`
-            : `Play ${idea.name}`
-      }
-      disabled={disabled}
-      onPress={idea.storageState === "on-device" ? onPlayToggle : undefined}
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
-    >
-      <View style={styles.header}>
-        <Text style={[styles.name, isPlaying && styles.namePlaying]} numberOfLines={1}>
-          {idea.storageState === "offloaded" ? "☁ " : isPlaying ? "❚❚ " : "▶ "}
+    <View style={[styles.row, isPlaying && styles.rowPlaying]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={
+          offloaded
+            ? `${idea.name}, cloud only`
+            : isPlaying
+              ? `Pause ${idea.name}`
+              : `Play ${idea.name}`
+        }
+        accessibilityState={{ disabled: disabled || offloaded }}
+        disabled={disabled || offloaded}
+        onPress={onPlayToggle}
+        style={({ pressed }) => [
+          styles.play,
+          isPlaying && styles.playActive,
+          pressed && styles.pressed,
+        ]}
+      >
+        {offloaded ? (
+          <CloudIcon />
+        ) : isPlaying ? (
+          <PauseIcon />
+        ) : (
+          <PlayIcon />
+        )}
+      </Pressable>
+
+      <View style={styles.body}>
+        <Text style={styles.name} numberOfLines={1}>
           {idea.name}
         </Text>
-        <Text style={styles.duration}>{formatDuration(idea.durationMs)}</Text>
-      </View>
 
-      <Waveform bars={bars} color={isPlaying ? "#e5484d" : "#3a3a44"} />
-
-      {metadataSummary.length > 0 ? (
-        <View style={styles.chips}>
-          {metadataSummary.map((label, index) => (
-            <View key={`${label}-${index}`} style={styles.chip}>
-              <Text style={styles.chipText} numberOfLines={1}>
-                {label}
+        <View style={styles.meta}>
+          <Text style={styles.duration}>{formatDuration(idea.durationMs)}</Text>
+          <View style={styles.metaDot} />
+          <Text style={styles.captured}>{captured}</Text>
+          {tags.map((tag) => (
+            <View key={tag} style={styles.tag}>
+              <Text style={styles.tagText} numberOfLines={1}>
+                {tag}
               </Text>
             </View>
           ))}
+          {overflowTags > 0 ? (
+            <Text style={styles.captured}>{`+${overflowTags}`}</Text>
+          ) : null}
+          {queued ? (
+            <View accessibilityLabel="Waiting to sync">
+              <QueuedIcon />
+            </View>
+          ) : null}
         </View>
-      ) : null}
 
-      <View style={styles.actions}>
-        {idea.storageState === "on-device" ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Share ${idea.name}`}
-            disabled={disabled}
-            onPress={onShare}
-            hitSlop={8}
-            style={styles.action}
-          >
-            <Text style={styles.actionLabel}>Share</Text>
-          </Pressable>
-        ) : null}
-        {storageAction ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${storageAction === "offload" ? "Offload" : "Redownload"} ${idea.name}`}
-            disabled={disabled}
-            onPress={onStorageAction}
-            hitSlop={8}
-            style={styles.action}
-          >
-            <Text style={styles.actionLabel}>
-              {storageAction === "offload" ? "Offload" : "Redownload"}
-            </Text>
-          </Pressable>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Rename ${idea.name}`}
-          disabled={disabled}
-          onPress={onRename}
-          hitSlop={8}
-          style={styles.action}
-        >
-          <Text style={styles.actionLabel}>Rename</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Edit tags for ${idea.name}`}
-          disabled={disabled}
-          onPress={onEditMetadata}
-          hitSlop={8}
-          style={styles.action}
-        >
-          <Text style={styles.actionLabel}>Tags</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Delete ${idea.name}`}
-          disabled={disabled}
-          onPress={onDelete}
-          hitSlop={8}
-          style={styles.action}
-        >
-          <Text style={styles.deleteLabel}>Delete</Text>
-        </Pressable>
+        <Waveform
+          bars={bars}
+          color={isPlaying ? colors.borderStrong : colors.border}
+          activeColor={colors.signal}
+          progress={isPlaying ? progress : 0}
+        />
       </View>
-    </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Actions for ${idea.name}`}
+        disabled={disabled}
+        onPress={onOpenActions}
+        style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+      >
+        <MoreIcon />
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#1c1c22",
-  },
-  cardPressed: {
-    opacity: 0.7,
-  },
-  header: {
+  row: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
+    gap: 14,
+    paddingVertical: 13,
+    paddingHorizontal: 20,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.hairline,
+  },
+  rowPlaying: {
+    backgroundColor: colors.surfaceHighlight,
+  },
+  play: {
+    width: 38,
+    height: 38,
+    borderRadius: radii.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  playActive: {
+    backgroundColor: colors.signalSoft,
+    borderColor: colors.signal,
+  },
+  pressed: {
+    opacity: 0.6,
+  },
+  body: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
   },
   name: {
-    color: "#f5f5f7",
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
-    flexShrink: 1,
-    marginRight: 12,
+    color: colors.text,
   },
-  namePlaying: {
-    color: "#e5484d",
+  meta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   duration: {
-    color: "#8a8a92",
-    fontSize: 14,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.textDim,
     fontVariant: ["tabular-nums"],
   },
-  chips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 10,
+  metaDot: {
+    width: 3,
+    height: 3,
+    borderRadius: radii.pill,
+    backgroundColor: colors.textIdle,
   },
-  chip: {
-    backgroundColor: "#20202a",
-    borderRadius: 12,
-    paddingVertical: 3,
-    paddingHorizontal: 10,
-    maxWidth: "100%",
+  captured: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.textFaint,
   },
-  chipText: {
-    color: "#b9b9c4",
-    fontSize: 12,
-  },
-  actions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 18,
-    marginTop: 10,
-  },
-  action: {
+  tag: {
+    maxWidth: 96,
     paddingVertical: 2,
+    paddingHorizontal: 7,
+    borderRadius: radii.tag,
+    backgroundColor: colors.surfaceActive,
   },
-  actionLabel: {
-    color: "#8a8a92",
-    fontSize: 13,
-    fontWeight: "500",
+  tagText: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    color: colors.textMuted,
   },
-  deleteLabel: {
-    color: "#e5484d",
-    fontSize: 13,
-    fontWeight: "500",
+  more: {
+    width: 44,
+    height: 44,
+    marginVertical: -8,
+    marginRight: -10,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

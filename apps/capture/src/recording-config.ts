@@ -10,6 +10,14 @@ export function recordingConfig(profile: RecordingProfile): RecordingConfig {
     sampleRate: 44_100,
     channels: profile.channels,
     encoding: "pcm_16bit",
+    // The Record screen's clock and level meter are driven by these emissions,
+    // so they arrive ten times a second: enough for a clock that ticks in
+    // tenths and a meter that tracks a hummed line.
+    interval: 100,
+    intervalAnalysis: 100,
+    enableProcessing: true,
+    // Only the live window is ever shown, so the hook must not accumulate every
+    // data point for the length of a recording.
     keepFullAnalysis: false,
     output:
       profile.audioFormat === "aac"

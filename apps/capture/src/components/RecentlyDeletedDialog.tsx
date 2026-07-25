@@ -1,10 +1,12 @@
-import { FlatList, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   formatDuration,
   formatRestoreWindow,
   RECENTLY_DELETED_RETENTION_DAYS,
 } from "@motif/shared";
 import type { IdeaMetadata, RecentlyDeletedIdea } from "@motif/shared";
+import { colors, fonts, radii } from "../theme";
+import { Sheet } from "./Sheet";
 
 /**
  * Recently Deleted: the Ideas this device has deleted but still holds, each
@@ -26,145 +28,114 @@ export function RecentlyDeletedDialog({
   onClose: () => void;
 }) {
   return (
-    <Modal
+    <Sheet
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
+      title="Recently Deleted"
+      subtitle={`Deleted ideas stay here for ${RECENTLY_DELETED_RETENTION_DAYS} days before they go for good.`}
+      onClose={onClose}
     >
-      <View style={styles.backdrop}>
-        <View style={styles.card}>
-          <Text style={styles.title}>Recently Deleted</Text>
-          <Text style={styles.subtitle}>
-            {`Deleted ideas stay here for ${RECENTLY_DELETED_RETENTION_DAYS} days before they go for good.`}
-          </Text>
-          {ideas.length === 0 ? (
-            <Text style={styles.empty}>Nothing here.</Text>
-          ) : (
-            <FlatList
-              data={ideas}
-              keyExtractor={(entry) => entry.idea.id}
-              contentContainerStyle={styles.listContent}
-              renderItem={({ item }) => (
-                <View style={styles.row}>
-                  <View style={styles.rowInfo}>
-                    <Text style={styles.rowName} numberOfLines={1}>
-                      {item.idea.name}
-                    </Text>
-                    <Text style={styles.rowMeta} numberOfLines={1}>
-                      {formatDuration(item.idea.durationMs)}
-                      {" · "}
-                      {formatRestoreWindow(item.purgeAt, now)}
-                    </Text>
-                  </View>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Restore ${item.idea.name}`}
-                    onPress={() => onRestore(item.idea)}
-                    style={styles.restore}
-                  >
-                    <Text style={styles.restoreLabel}>Restore</Text>
-                  </Pressable>
-                </View>
-              )}
-            />
+      {ideas.length === 0 ? (
+        <Text style={styles.empty}>Nothing here.</Text>
+      ) : (
+        <FlatList
+          data={ideas}
+          keyExtractor={(entry) => entry.idea.id}
+          style={styles.list}
+          renderItem={({ item }) => (
+            <View style={styles.row}>
+              <View style={styles.rowInfo}>
+                <Text style={styles.rowName} numberOfLines={1}>
+                  {item.idea.name}
+                </Text>
+                <Text style={styles.rowMeta} numberOfLines={1}>
+                  {formatDuration(item.idea.durationMs)}
+                  {" · "}
+                  {formatRestoreWindow(item.purgeAt, now)}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Restore ${item.idea.name}`}
+                onPress={() => onRestore(item.idea)}
+                style={({ pressed }) => [styles.restore, pressed && styles.pressed]}
+              >
+                <Text style={styles.restoreLabel}>Restore</Text>
+              </Pressable>
+            </View>
           )}
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={onClose}
-              style={styles.action}
-            >
-              <Text style={styles.doneLabel}>Done</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
+        />
+      )}
+      <Pressable
+        accessibilityRole="button"
+        onPress={onClose}
+        style={({ pressed }) => [styles.done, pressed && styles.pressed]}
+      >
+        <Text style={styles.doneLabel}>Done</Text>
+      </Pressable>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 32,
-  },
-  card: {
-    width: "100%",
-    maxHeight: "70%",
-    backgroundColor: "#17171d",
-    borderRadius: 16,
-    padding: 20,
-  },
-  title: {
-    color: "#f5f5f7",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  subtitle: {
-    color: "#8a8a92",
-    fontSize: 13,
-    marginTop: 6,
-    marginBottom: 14,
-  },
   empty: {
-    color: "#686872",
+    fontFamily: fonts.sans,
     fontSize: 14,
-    paddingVertical: 18,
+    color: colors.textFaint,
+    paddingVertical: 24,
     textAlign: "center",
   },
-  listContent: {
-    gap: 8,
+  list: {
+    maxHeight: 360,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    backgroundColor: "#0b0b0f",
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 22,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.hairline,
   },
   rowInfo: {
     flex: 1,
+    minWidth: 0,
+    gap: 4,
   },
   rowName: {
-    color: "#f5f5f7",
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
-    fontWeight: "500",
+    color: colors.text,
   },
   rowMeta: {
-    color: "#8a8a92",
-    fontSize: 12,
-    marginTop: 3,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.textDim,
   },
   restore: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: "#22222a",
-  },
-  restoreLabel: {
-    color: "#f5f5f7",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  actions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 16,
-  },
-  action: {
     paddingVertical: 8,
     paddingHorizontal: 14,
-    borderRadius: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceActive,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  restoreLabel: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 13,
+    color: colors.text,
+  },
+  pressed: {
+    opacity: 0.6,
+  },
+  done: {
+    alignSelf: "center",
+    marginTop: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
   },
   doneLabel: {
-    color: "#8a8a92",
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
-    fontWeight: "500",
+    color: colors.textDim,
   },
 });

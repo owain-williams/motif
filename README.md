@@ -67,14 +67,26 @@ pnpm web            # run in a browser (react-native-web)
 pnpm build          # expo export (all platforms) → apps/capture/dist
 ```
 
-The home screen is the core capture loop: a single record button that starts and
-stops on tap, auto-saving each recording as an Idea (no naming prompt) into a
-reverse-chronological Library. Each Library entry shows a waveform, name, and
-duration; tapping it plays the audio, and it can be renamed or deleted in place.
-The record/stop toggle and waveform-selection fallback live in tested `src/core`
-modules; naming, Idea construction, and Library ordering/rename/delete come from
-`@motif/shared`. Audio persistence, device-local waveform sidecars, and playback
-wiring are in `src/idea-storage` and `App.tsx`.
+Capture is three screens — Record and Library as tabs, Sync pushed from Record's
+status pill — behind a three-card first run (ADR 0007). Record is the core
+capture loop: a single button that starts and stops on tap, over a live clock
+and level meter, auto-saving each recording as an Idea (no naming prompt) into a
+reverse-chronological Library. Each Library entry shows a waveform, name,
+duration, capture time and Tags; tapping it plays the audio (the waveform
+doubles as the playhead), and rename, tags, share, offload and delete sit behind
+the row's actions sheet. Sync reports what has reached the paired Bridge and
+what is still queued, and holds the account, recording format and location
+tagging.
+
+Design tokens (palette, radii, type scale) live in `src/theme.ts`, and the
+Geist / Geist Mono / Instrument Serif typefaces load through `expo-font`; nothing
+under `src/components` hard-codes a colour or a font name. Presentation logic
+that needs no device — the recording clock, the level meter's rolling window,
+Library filtering and empty-state copy, relative capture labels, onboarding, and
+the Sync screen's figures — lives in tested `src/core` modules; naming, Idea
+construction, and Library ordering/rename/delete come from `@motif/shared`. Audio
+persistence, device-local waveform sidecars, and playback wiring are in
+`src/idea-storage` and `App.tsx`.
 
 Capture can be used without an account at the Free tier. Its Account dialog also
 supports Cognito email sign-up/confirmation and login; logged-in sessions expose
@@ -121,9 +133,11 @@ so it can be tested without a simulator, device, or window:
   construction), Tier rules, Library ordering, and — later — Offload transitions
   and share-export format selection.
 - **Capture core** — `apps/capture/src/core` (plain TypeScript, Vitest) — the
-  Capture-only recording session and Library waveform selection. The Expo shell
-  (`App.tsx`, `src/idea-storage`, `src/recording-config`) stays a thin adapter
-  over it and `@motif/shared`.
+  Capture-only recording session, Library waveform selection, and the screens'
+  presentation logic (recording clock, level meter, Library filtering, relative
+  capture labels, onboarding, sync figures). The Expo shell (`App.tsx`,
+  `src/components`, `src/idea-storage`, `src/recording-config`) stays a thin
+  adapter over it and `@motif/shared`.
 - **`bridge-core`** (Rust, `cargo test`) — local-network discovery/transfer,
   cloud relay client, transcode orchestration, multi-device pairing. The Tauri
   commands layer (`src-tauri`) stays a thin adapter over it.

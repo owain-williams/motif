@@ -12,8 +12,10 @@
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Motif discovers Bridge and syncs your ideas over your local network.",
         "NSBonjourServices": [
+          "_motif-bridge._tcp",
           "_motif-bridge._tcp"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -22,7 +24,13 @@
       "permissions": [
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
@@ -39,6 +47,12 @@
           "locationWhenInUsePermission": "Motif tags your recordings with where you made them when you turn on location tagging."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6782d888-1652-468a-8a91-b49de982d905"
+      }
+    },
+    "owner": "andersdigital"
   }
 }

@@ -1,16 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Alert, StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { useFonts } from "expo-font";
 import * as Sharing from "expo-sharing";
 import {
   requestRecordingPermissionsAsync,
@@ -42,7 +33,6 @@ import {
   recordingProfile,
   sameDeletions,
   sameEditableMetadata,
-  searchLibrary,
   setIdeaStorageState,
   SYNC_PROTOCOL_VERSION,
 } from "@motif/shared";
@@ -71,6 +61,21 @@ import {
   unpair,
 } from "./src/core/sync-engine";
 import type { PairedBridge, SyncEngineState } from "./src/core/sync-engine";
+import { formatRecordingClock } from "./src/core/recording-clock";
+import { IDLE_METER, pushLevels } from "./src/core/level-meter";
+import {
+  activeChipId,
+  ALL_CHIP_ID,
+  filterLibrary,
+  libraryChips,
+  libraryEmptyState,
+} from "./src/core/library-filter";
+import {
+  queuedIdeaIds,
+  syncSummary,
+  withDelivered,
+} from "./src/core/sync-summary";
+import { nextOnboardingStep, onboardingStep } from "./src/core/onboarding";
 import {
   audioExtension,
   recordingConfig,
@@ -113,7 +118,19 @@ import {
   reverseGeocode,
 } from "./src/geolocation";
 import { loadSettings, saveSettings } from "./src/settings-storage";
-import { LibraryRow } from "./src/components/LibraryRow";
+import type { CaptureSettings } from "./src/settings-storage";
+import { DEFAULT_SETTINGS } from "./src/settings-storage";
+import { MOTIF_FONTS } from "./src/fonts";
+import { colors } from "./src/theme";
+import { OnboardingScreen } from "./src/components/OnboardingScreen";
+import { RecordScreen } from "./src/components/RecordScreen";
+import { LibraryScreen } from "./src/components/LibraryScreen";
+import { SyncScreen } from "./src/components/SyncScreen";
+import type { SyncStatus } from "./src/components/SyncScreen";
+import { TabBar } from "./src/components/TabBar";
+import type { CaptureTab } from "./src/components/TabBar";
+import { Toast } from "./src/components/Toast";
+import { IdeaActionsSheet } from "./src/components/IdeaActionsSheet";
 import { RecentlyDeletedDialog } from "./src/components/RecentlyDeletedDialog";
 import { RenameDialog } from "./src/components/RenameDialog";
 import { MetadataDialog } from "./src/components/MetadataDialog";
@@ -143,16 +160,14 @@ import { LIBRARY_WAVEFORM_BAR_COUNT } from "./src/core/idea-waveform";
 import { setBackgroundSyncEnabled } from "./src/background-sync";
 
 /**
- * Capture home screen: a single record button that captures an Idea and
- * auto-saves it — no naming prompt (motif-6fu.3) — into a reverse-chronological
- * Library where each entry shows a waveform, plays on tap, and can be renamed
- * or deleted (motif-6fu.4).
+ * Capture's device shell. It presents three screens — Record, Library and Sync
+ * — plus first-run onboarding, and owns the state that moves between them.
  *
- * This is the thin device shell. The record/stop toggle lives in the tested
- * `src/core` recording session; naming, Idea construction, Library ordering,
- * rename/delete live in `@motif/shared`; waveform selection lives in
- * `src/core`, while audio and waveform-sidecar persistence live in
- * `src/idea-storage`. Everything here just wires those to the audio engine.
+ * Everything decidable without a device lives elsewhere: the record/stop toggle
+ * and level meter in `src/core`, naming, Library ordering, search, rename and
+ * delete in `@motif/shared`, filtering and sync figures in `src/core`. This file
+ * wires those to the audio engine, the filesystem and the network, and the
+ * components under `src/components` render the result.
  */
 function newIdeaId(capturedAt: number): string {
   const random = Math.random().toString(36).slice(2, 10);
@@ -161,6 +176,15 @@ function newIdeaId(capturedAt: number): string {
 
 /** How often a paired Capture retries offering pending Ideas to Bridge. */
 const SYNC_INTERVAL_MS = 15_000;
+
+/**
+ * How often the Library re-reads the clock behind its "Today"/"Yesterday"
+ * labels. A minute is well inside the smallest unit those labels use.
+ */
+const RELATIVE_TIME_REFRESH_MS = 60_000;
+
+/** How long a confirmation stays up before it stops being news. */
+const TOAST_MS = 2600;
 
 /** Everything a sync pass needs: the paired Bridge, who we are, what we have. */
 interface SyncInputs {
@@ -172,6 +196,7 @@ interface SyncInputs {
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts(MOTIF_FONTS);
   const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
   const [requestedChannels, setRequestedChannels] =
     useState<RecordingChannelCount>(1);
@@ -187,11 +212,14 @@ export default function App() {
 
   const [library, setLibrary] = useState<IdeaMetadata[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedTag, setSelectedTag] = useState(ALL_CHIP_ID);
   const [waveforms, setWaveforms] = useState<Record<string, readonly number[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [meter, setMeter] = useState(IDLE_METER);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [actionsTarget, setActionsTarget] = useState<IdeaMetadata | null>(null);
   const [renameTarget, setRenameTarget] = useState<IdeaMetadata | null>(null);
   const [metadataTarget, setMetadataTarget] = useState<IdeaMetadata | null>(null);
   const [storageBusyId, setStorageBusyId] = useState<string | null>(null);
@@ -199,13 +227,22 @@ export default function App() {
   const [captureIdentity, setCaptureIdentity] = useState<DeviceIdentity | null>(null);
   const [showPair, setShowPair] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  // Whether the last local-network pass reached Bridge; `null` before any ran.
+  const [bridgeReachable, setBridgeReachable] = useState<boolean | null>(null);
   const [showAccount, setShowAccount] = useState(false);
   const [showRecentlyDeleted, setShowRecentlyDeleted] = useState(false);
   // The instant Recently Deleted was last opened. Its "N days left" figures are
   // read as of then, so they hold still while the sheet is up (and through its
   // closing animation) rather than drifting under the user.
   const [recentlyDeletedAsOf, setRecentlyDeletedAsOf] = useState(0);
-  const [locationTaggingEnabled, setLocationTaggingEnabled] = useState(false);
+  const [settings, setSettings] = useState<CaptureSettings | null>(null);
+  const [onboardingIndex, setOnboardingIndex] = useState(0);
+  const [tab, setTab] = useState<CaptureTab>("record");
+  const [showSync, setShowSync] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authTokensRef = useRef<AuthTokens | null>(null);
   // Latest sync inputs, so the periodic timer always offers the current Library.
   const syncInputsRef = useRef<SyncInputs | null>(null);
@@ -215,6 +252,43 @@ export default function App() {
   useEffect(() => {
     libraryRef.current = library;
   }, [library]);
+
+  // Ids a peer has reported holding, or that a pass has just delivered — what
+  // separates a queued Idea from a synced one on the Library and Sync screens.
+  const [deliveredIds, setDeliveredIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const deliveredRef = useRef(deliveredIds);
+  const rememberDelivered = useCallback((...batches: readonly string[][]) => {
+    const next = withDelivered(deliveredRef.current, ...batches);
+    if (next === deliveredRef.current) return;
+    deliveredRef.current = next;
+    setDeliveredIds(next);
+  }, []);
+
+  /** Takes down any confirmation on screen, and the timer that would have. */
+  const clearToast = useCallback(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = null;
+    setToast(null);
+  }, []);
+
+  /** Shows a transient confirmation, replacing any still on screen. */
+  const showToast = useCallback(
+    (message: string) => {
+      clearToast();
+      setToast(message);
+      toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+    },
+    [clearToast],
+  );
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    [],
+  );
 
   // This device's delete/restore records (ADR 0005). Held as state so the
   // Library re-renders when a peer's delete lands, and mirrored in a ref so a
@@ -333,16 +407,19 @@ export default function App() {
     if (playerStatus.didJustFinish) setPlayingId(null);
   }, [playerStatus.didJustFinish]);
 
-  // Restore the persisted location tag toggle. Defaults to off, so nothing is ever
-  // captured until the user turns it on.
+  // Restore persisted settings — the location tag toggle (default off, so
+  // nothing is ever captured until the user turns it on) and whether onboarding
+  // has been seen. Until they load, the app holds on its launch screen rather
+  // than risk flashing onboarding at someone who finished it months ago.
   useEffect(() => {
     let active = true;
     loadSettings()
-      .then((settings) => {
-        if (active) setLocationTaggingEnabled(settings.locationTaggingEnabled);
+      .then((loaded) => {
+        if (active) setSettings(loaded);
       })
       .catch(() => {
-        // A missing/corrupt settings file just means the default (off).
+        // A missing/corrupt settings file just means the defaults.
+        if (active) setSettings({ ...DEFAULT_SETTINGS });
       });
     return () => {
       active = false;
@@ -365,6 +442,21 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  // Keep relative capture labels honest as the day turns under a running app.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), RELATIVE_TIME_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fold each batch of recorder analysis into the live level meter. `pushLevels`
+  // ignores points already shown, so a re-delivered window doesn't scroll it.
+  useEffect(() => {
+    if (!isRecording) return;
+    const points = recorder.analysisData?.dataPoints;
+    if (!points || points.length === 0) return;
+    setMeter((current) => pushLevels(current, points));
+  }, [isRecording, recorder.analysisData]);
 
   // Applies a reconciled Library from a metadata sync onto the *current* state,
   // re-merging per Idea so a concurrent local edit or a just-captured Idea is
@@ -395,12 +487,13 @@ export default function App() {
     const readAudio = (idea: IdeaMetadata) =>
       readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
     const statuses: string[] = [];
+    setIsSyncing(true);
 
     if (transports.includes("local-network") && inputs.bridge) {
       try {
         // The pass exchanges delete records before offering audio, so a delete
         // made on either device while the other was offline lands first.
-        const { synced, deletions: merged } = await syncPendingIdeas({
+        const { synced, remoteHave, deletions: merged } = await syncPendingIdeas({
           endpoint: inputs.bridge.endpoint,
           capture: inputs.capture,
           library: inputs.library,
@@ -408,6 +501,8 @@ export default function App() {
           readAudio,
         });
         applyDeletions(merged);
+        rememberDelivered(remoteHave, synced);
+        setBridgeReachable(true);
         statuses.push(
           synced.length > 0
             ? `${synced.length} to ${inputs.bridge.displayName}`
@@ -423,19 +518,21 @@ export default function App() {
           }),
         );
       } catch {
+        setBridgeReachable(false);
         statuses.push(`${inputs.bridge.displayName} offline`);
       }
     }
 
     if (transports.includes("cloud-relay") && inputs.idToken) {
       try {
-        const synced = await syncPendingCloudIdeas({
+        const { synced, remoteHave } = await syncPendingCloudIdeas({
           idToken: inputs.idToken,
           capture: inputs.capture,
           library: inputs.library,
           deletions: deletionsRef.current,
           readAudio,
         });
+        rememberDelivered(remoteHave, synced);
         // Reported before the metadata pass, as the LAN branch does: the audio
         // that reached the cloud reached it whether or not the edits that
         // follow do.
@@ -457,9 +554,10 @@ export default function App() {
       }
     }
 
+    setIsSyncing(false);
     setSyncStatus(statuses.join(" · ") || null);
     },
-    [applyMergedMetadata, applyDeletions],
+    [applyMergedMetadata, applyDeletions, rememberDelivered],
   );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
@@ -530,6 +628,8 @@ export default function App() {
     activeRecordingProfileRef.current = profile;
     await recorder.startRecording(recordingConfig(profile));
     sessionRef.current = beginRecording(IDLE_SESSION, Date.now());
+    setMeter(IDLE_METER);
+    clearToast();
     setIsRecording(true);
   }
 
@@ -541,6 +641,7 @@ export default function App() {
     const { session, startedAt } = endRecording(sessionRef.current);
     sessionRef.current = session;
     setIsRecording(false);
+    setMeter(IDLE_METER);
 
     const recordingProfileUsed = activeRecordingProfileRef.current;
     const uri =
@@ -572,6 +673,8 @@ export default function App() {
     const next = insertIdea(library, idea);
     saveLibrary(next);
     setLibrary(next);
+    const transports = syncTransports(tier, syncState.pairedBridge !== null);
+    showToast(transports.length > 0 ? "Saved · sending to Bridge" : "Saved");
     // Nudge the new Idea to Bridge right away if paired (copy semantics — the
     // Capture-side Idea just saved stays put); the interval is the fallback.
     if (captureIdentity) {
@@ -581,6 +684,9 @@ export default function App() {
         library: next,
         tier,
         idToken: authTokensRef.current?.idToken ?? null,
+      }).then(() => {
+        // Only claim it landed once a peer has actually said so.
+        if (deliveredRef.current.has(id)) showToast("On your Bridge");
       });
     }
     // Opt-in location tagging resolves off the record path, so a slow reverse-
@@ -598,7 +704,7 @@ export default function App() {
    */
   async function attachCapturedLocation(id: string, capturedAt: number) {
     const location = await resolveCaptureLocation({
-      enabled: locationTaggingEnabled,
+      enabled: settings?.locationTaggingEnabled ?? false,
       readLastKnownPosition,
       reverseGeocode,
     });
@@ -627,6 +733,7 @@ export default function App() {
       }
     } catch (error) {
       setIsRecording(false);
+      setMeter(IDLE_METER);
       sessionRef.current = IDLE_SESSION;
       Alert.alert(
         "Something went wrong",
@@ -716,6 +823,7 @@ export default function App() {
         const next = setIdeaStorageState(library, idea.id, "offloaded");
         saveLibrary(next);
         setLibrary(next);
+        showToast("Offloaded to your account");
       } else {
         const audio = await downloadCloudIdea(tokens.idToken, idea.id);
         const persistedUri = persistIdeaAudioBytes(
@@ -729,6 +837,7 @@ export default function App() {
         const next = setIdeaStorageState(library, idea.id, "on-device");
         saveLibrary(next);
         setLibrary(next);
+        showToast("Back on this device");
       }
     } catch (error) {
       Alert.alert(
@@ -836,6 +945,14 @@ export default function App() {
     await clearPairedBridge();
     setSyncState((current) => unpair(current));
     setSyncStatus(null);
+    setBridgeReachable(null);
+  }
+
+  /** Persists one settings change, keeping the loaded settings as the base. */
+  function updateSettings(change: Partial<CaptureSettings>) {
+    const next = { ...(settings ?? DEFAULT_SETTINGS), ...change };
+    setSettings(next);
+    saveSettings(next);
   }
 
   // Turning location tagging on requests location permission up front, so recording
@@ -852,8 +969,7 @@ export default function App() {
         return;
       }
     }
-    setLocationTaggingEnabled(next);
-    saveSettings({ locationTaggingEnabled: next });
+    updateSettings({ locationTaggingEnabled: next });
   }
 
   async function login(email: string, password: string) {
@@ -922,181 +1038,199 @@ export default function App() {
     syncNow();
   }
 
+  /** Runs a row action against the Idea whose sheet is open, then closes it. */
+  function runIdeaAction(action: (idea: IdeaMetadata) => void) {
+    const target = actionsTarget;
+    setActionsTarget(null);
+    if (target) action(target);
+  }
+
   // Deleted Ideas drop out of the Library the moment a delete lands, here or
   // from Bridge; their audio stays for the grace period (ADR 0005).
   const activeLibrary = activeIdeas(library, deletions);
   const deletedIdeas = recentlyDeletedIdeas(library, deletions);
-  const visibleLibrary = searchLibrary(activeLibrary, searchQuery);
+  const chips = libraryChips(activeLibrary);
+  const activeChip = activeChipId(chips, selectedTag);
+  const libraryFilter = { tag: activeChip, query: searchQuery };
+  const visibleLibrary = filterLibrary(activeLibrary, libraryFilter);
   const metadataSuggestions = {
     tags: distinctFieldValues(activeLibrary, "tags"),
     instrument: distinctFieldValues(activeLibrary, "instrument"),
     style: distinctFieldValues(activeLibrary, "style"),
   };
 
+  const summary = syncSummary({ library, deletions, deliveredIds });
+  const queuedIds = queuedIdeaIds(library, deletions, deliveredIds);
+  const paired = isPaired(syncState);
+  const canSync = syncTransports(tier, paired).length > 0;
+  const playbackProgress =
+    playerStatus.duration > 0
+      ? Math.min(1, Math.max(0, playerStatus.currentTime / playerStatus.duration))
+      : 0;
+
+  const recordingFormat = `${
+    profile.audioFormat === "wav" ? "Uncompressed WAV" : "Compressed AAC"
+  } · ${profile.channels === 2 ? "Stereo" : "Mono"}`;
+
+  const syncPillLabel = !canSync
+    ? "Not paired"
+    : isSyncing
+      ? "Sending"
+      : summary.queuedCount > 0
+        ? `Queued ${summary.queuedCount}`
+        : "Synced";
+
+  const syncScreenStatus: SyncStatus = paired
+    ? bridgeReachable === false
+      ? { label: "OFFLINE", tone: "warn" }
+      : bridgeReachable === true
+        ? { label: "LIVE", tone: "live" }
+        : { label: "PAIRED", tone: "idle" }
+    : canSync
+      ? { label: "CLOUD", tone: "live" }
+      : { label: "NOT PAIRED", tone: "idle" };
+
+  // Hold the launch screen until the typefaces and the persisted settings are
+  // both in: a first frame in a fallback face, or onboarding shown to someone
+  // who finished it long ago, are worse than a few more milliseconds of black.
+  if (!fontsLoaded || settings === null) {
+    return (
+      <View style={styles.launch}>
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
+  const step = settings.onboardingCompleted ? null : onboardingStep(onboardingIndex);
+  if (step !== null) {
+    return (
+      <View style={styles.app}>
+        <OnboardingScreen
+          index={onboardingIndex}
+          step={step}
+          onNext={() => {
+            const next = nextOnboardingStep(onboardingIndex);
+            if (next === null) updateSettings({ onboardingCompleted: true });
+            else setOnboardingIndex(next);
+          }}
+          onSkip={() => updateSettings({ onboardingCompleted: true })}
+        />
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.brand}>Motif</Text>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Account"
-        onPress={() => setShowAccount(true)}
-        disabled={isRecording}
-        style={styles.accountButton}
-      >
-        <Text style={styles.accountText} numberOfLines={1}>
-          {account.kind === "authenticated"
-            ? `${account.email} · ${account.tier}`
-            : "Free · Log in or create account"}
-        </Text>
-      </Pressable>
-
-      <View style={styles.recordArea}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={isRecording ? "Stop recording" : "Start recording"}
-          onPress={onPressRecord}
-          disabled={isBusy || storageBusyId !== null}
-          style={({ pressed }) => [
-            styles.recordButton,
-            isRecording && styles.recordButtonActive,
-            pressed && styles.recordButtonPressed,
-          ]}
-        >
-          <View style={isRecording ? styles.stopIcon : styles.recordIcon} />
-        </Pressable>
-        <Text style={styles.recordHint}>
-          {isRecording
-            ? formatDuration(recorder.durationMs)
-            : "Tap to capture an idea"}
-        </Text>
-        <Text style={styles.recordingFormat}>
-          {profile.audioFormat === "wav" ? "Uncompressed WAV" : "Compressed AAC"}
-          {" · "}
-          {profile.channels === 2 ? "Stereo" : "Mono"}
-        </Text>
-        {channelChoices.length > 1 ? (
-          <View style={styles.channelChoices}>
-            {channelChoices.map((channels) => (
-              <Pressable
-                key={channels}
-                accessibilityRole="button"
-                accessibilityLabel={channels === 1 ? "Record in mono" : "Record in stereo"}
-                disabled={isRecording || isBusy}
-                onPress={() => setRequestedChannels(channels)}
-                style={[
-                  styles.channelChoice,
-                  profile.channels === channels && styles.channelChoiceActive,
-                ]}
-              >
-                <Text style={styles.channelChoiceText}>
-                  {channels === 1 ? "Mono" : "Stereo"}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-      </View>
-
-      <View style={styles.syncRow}>
-        <View style={styles.syncInfo}>
-          <Text style={styles.syncTitle}>
-            {isPaired(syncState) && syncState.pairedBridge
-              ? `Paired · ${syncState.pairedBridge.displayName}`
-              : "Not paired with Bridge"}
-          </Text>
-          {syncStatus ? (
-            <Text style={styles.syncStatus} numberOfLines={1}>
-              {syncStatus}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={isPaired(syncState) ? "Unpair Bridge" : "Pair with Bridge"}
-          onPress={isPaired(syncState) ? handleUnpair : () => setShowPair(true)}
-          style={styles.syncButton}
-        >
-          <Text style={styles.syncButtonLabel}>
-            {isPaired(syncState) ? "Unpair" : "Pair"}
-          </Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.settingsRow}>
-        <View style={styles.settingsInfo}>
-          <Text style={styles.settingsTitle}>Location tagging</Text>
-          <Text style={styles.settingsSubtitle} numberOfLines={1}>
-            {locationTaggingEnabled
-              ? "New recordings are tagged with your location"
-              : "Off — recordings are never location-tagged"}
-          </Text>
-        </View>
-        <Switch
-          accessibilityLabel="Location tagging"
-          value={locationTaggingEnabled}
-          onValueChange={(next) => void toggleLocationTagging(next)}
-          disabled={isRecording}
+    <View style={styles.app}>
+      {showSync ? (
+        <SyncScreen
+          bridgeName={syncState.pairedBridge?.displayName ?? null}
+          bridgeDetail={
+            syncState.pairedBridge
+              ? `${syncState.pairedBridge.endpoint.host}:${syncState.pairedBridge.endpoint.port}`
+              : "Pair to send Ideas straight to your desktop"
+          }
+          status={syncScreenStatus}
+          statusLine={syncStatus}
+          summary={summary}
+          syncing={isSyncing}
+          paired={paired}
+          canSync={canSync}
+          now={now}
+          accountLabel={
+            account.kind === "authenticated"
+              ? `${account.email} · ${account.tier}`
+              : "Free · not signed in"
+          }
+          recordingFormat={recordingFormat}
+          channelChoices={channelChoices}
+          channels={profile.channels}
+          locationTaggingEnabled={settings.locationTaggingEnabled}
+          onBack={() => setShowSync(false)}
+          onSyncNow={syncNow}
+          onPair={() => setShowPair(true)}
+          onUnpair={handleUnpair}
+          onOpenAccount={() => setShowAccount(true)}
+          onSelectChannels={setRequestedChannels}
+          onToggleLocationTagging={(next) => void toggleLocationTagging(next)}
         />
-      </View>
-
-      <View style={styles.library}>
-        <View style={styles.libraryHeader}>
-          <Text style={styles.libraryHeading}>Library</Text>
-          {deletedIdeas.length > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Recently Deleted"
-              onPress={() => {
-                setRecentlyDeletedAsOf(Date.now());
-                setShowRecentlyDeleted(true);
-              }}
-              style={styles.recentlyDeletedButton}
-            >
-              <Text style={styles.recentlyDeletedLabel}>
-                {`Recently Deleted (${deletedIdeas.length})`}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-        <TextInput
-          accessibilityLabel="Search Library"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search name, tags, instrument, style, tempo, location"
-          placeholderTextColor="#686872"
-          returnKeyType="search"
-          autoCorrect={false}
-          style={styles.searchInput}
+      ) : tab === "record" ? (
+        <RecordScreen
+          recording={isRecording}
+          busy={isBusy || storageBusyId !== null}
+          clock={formatRecordingClock(isRecording ? recorder.durationMs : 0)}
+          levels={meter.levels}
+          syncLabel={syncPillLabel}
+          syncing={canSync}
+          hint={isRecording ? "Tap again to keep it" : "Tap to record"}
+          meta={
+            isRecording
+              ? canSync
+                ? "Saving locally · will sync"
+                : "Saving locally"
+              : `${activeLibrary.length} ${
+                  activeLibrary.length === 1 ? "idea" : "ideas"
+                } · ${recordingFormat}`
+          }
+          onToggleRecord={() => void onPressRecord()}
+          onOpenSync={() => setShowSync(true)}
         />
-        {isLoading ? (
-          <ActivityIndicator color="#8a8a92" style={styles.libraryLoading} />
-        ) : activeLibrary.length === 0 ? (
-          <Text style={styles.empty}>No ideas yet. Tap the button to record one.</Text>
-        ) : visibleLibrary.length === 0 ? (
-          <Text style={styles.empty}>No ideas match your search.</Text>
-        ) : (
-          <FlatList
-            data={visibleLibrary}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => (
-              <LibraryRow
-                idea={item}
-                isPlaying={playingId === item.id}
-                waveformPeaks={waveforms[item.id]}
-                storageAction={ideaStorageAction(tier, item)}
-                disabled={storageBusyId !== null}
-                onPlayToggle={() => togglePlayback(item)}
-                onShare={() => shareIdea(item)}
-                onStorageAction={() => handleIdeaStorageAction(item)}
-                onRename={() => setRenameTarget(item)}
-                onEditMetadata={() => setMetadataTarget(item)}
-                onDelete={() => confirmDelete(item)}
-              />
-            )}
-          />
-        )}
-      </View>
+      ) : (
+        <LibraryScreen
+          ideas={visibleLibrary}
+          totalCount={activeLibrary.length}
+          chips={chips}
+          activeChip={activeChip}
+          query={searchQuery}
+          loading={isLoading}
+          playingId={playingId}
+          progress={playbackProgress}
+          waveforms={waveforms}
+          queuedIds={queuedIds}
+          now={now}
+          disabled={storageBusyId !== null}
+          deletedCount={deletedIdeas.length}
+          emptyState={libraryEmptyState(libraryFilter)}
+          onQueryChange={setSearchQuery}
+          onSelectChip={setSelectedTag}
+          onPlayToggle={(idea) => void togglePlayback(idea)}
+          onOpenActions={setActionsTarget}
+          onOpenRecentlyDeleted={() => {
+            setRecentlyDeletedAsOf(Date.now());
+            setShowRecentlyDeleted(true);
+          }}
+          onEmptyAction={() => {
+            if (libraryEmptyState(libraryFilter).action === "record") {
+              setTab("record");
+            } else {
+              setSearchQuery("");
+              setSelectedTag(ALL_CHIP_ID);
+            }
+          }}
+        />
+      )}
+
+      {showSync ? null : (
+        <TabBar active={tab} disabled={isRecording} onSelect={setTab} />
+      )}
+
+      <Toast message={toast} />
+
+      <IdeaActionsSheet
+        idea={actionsTarget}
+        storageAction={
+          actionsTarget ? ideaStorageAction(tier, actionsTarget) : null
+        }
+        busy={storageBusyId !== null}
+        onShare={() => runIdeaAction((idea) => void shareIdea(idea))}
+        onRename={() => runIdeaAction(setRenameTarget)}
+        onEditMetadata={() => runIdeaAction(setMetadataTarget)}
+        onStorageAction={() =>
+          runIdeaAction((idea) => void handleIdeaStorageAction(idea))
+        }
+        onDelete={() => runIdeaAction(confirmDelete)}
+        onClose={() => setActionsTarget(null)}
+      />
 
       <RecentlyDeletedDialog
         visible={showRecentlyDeleted}
@@ -1144,205 +1278,12 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  app: {
     flex: 1,
-    backgroundColor: "#0b0b0f",
-    paddingTop: 72,
-    paddingHorizontal: 20,
+    backgroundColor: colors.canvas,
   },
-  brand: {
-    color: "#f5f5f7",
-    fontSize: 20,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  accountButton: {
-    alignSelf: "center",
-    marginTop: 10,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    maxWidth: "100%",
-    borderRadius: 16,
-    backgroundColor: "#16161c",
-  },
-  accountText: {
-    color: "#a0a0a8",
-    fontSize: 12,
-    textTransform: "capitalize",
-  },
-  recordArea: {
-    alignItems: "center",
-    paddingVertical: 28,
-  },
-  recordButton: {
-    width: 132,
-    height: 132,
-    borderRadius: 66,
-    backgroundColor: "#e5484d",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#e5484d",
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  recordButtonActive: {
-    backgroundColor: "#3a1315",
-    borderWidth: 2,
-    borderColor: "#e5484d",
-  },
-  recordButtonPressed: {
-    opacity: 0.85,
-  },
-  recordIcon: {
-    width: 108,
-    height: 108,
-    borderRadius: 54,
-    borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.85)",
-  },
-  stopIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: "#e5484d",
-  },
-  recordHint: {
-    color: "#8a8a92",
-    fontSize: 15,
-    marginTop: 20,
-    fontVariant: ["tabular-nums"],
-  },
-  recordingFormat: {
-    color: "#686872",
-    fontSize: 12,
-    marginTop: 8,
-  },
-  channelChoices: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 12,
-  },
-  channelChoice: {
-    borderRadius: 8,
-    backgroundColor: "#22222a",
-    paddingVertical: 7,
-    paddingHorizontal: 16,
-  },
-  channelChoiceActive: {
-    backgroundColor: "#9d3035",
-  },
-  channelChoiceText: {
-    color: "#f5f5f7",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  syncRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 16,
-    backgroundColor: "#16161c",
-    borderRadius: 12,
-  },
-  syncInfo: {
+  launch: {
     flex: 1,
-  },
-  syncTitle: {
-    color: "#f5f5f7",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  syncStatus: {
-    color: "#8a8a92",
-    fontSize: 12,
-    marginTop: 2,
-  },
-  syncButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: "#22222a",
-  },
-  syncButtonLabel: {
-    color: "#f5f5f7",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  settingsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 16,
-    backgroundColor: "#16161c",
-    borderRadius: 12,
-  },
-  settingsInfo: {
-    flex: 1,
-  },
-  settingsTitle: {
-    color: "#f5f5f7",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  settingsSubtitle: {
-    color: "#8a8a92",
-    fontSize: 12,
-    marginTop: 2,
-  },
-  library: {
-    flex: 1,
-  },
-  libraryHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  libraryHeading: {
-    color: "#f5f5f7",
-    fontSize: 16,
-    fontWeight: "600",
-    marginBottom: 8,
-  },
-  recentlyDeletedButton: {
-    marginBottom: 8,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    backgroundColor: "#16161c",
-  },
-  recentlyDeletedLabel: {
-    color: "#8a8a92",
-    fontSize: 12,
-    fontWeight: "500",
-  },
-  searchInput: {
-    color: "#f5f5f7",
-    backgroundColor: "#16161c",
-    borderWidth: 1,
-    borderColor: "#2c2c35",
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginBottom: 8,
-    fontSize: 14,
-  },
-  libraryLoading: {
-    marginTop: 24,
-  },
-  empty: {
-    color: "#5a5a62",
-    fontSize: 14,
-    marginTop: 8,
-  },
-  listContent: {
-    paddingBottom: 24,
+    backgroundColor: colors.canvas,
   },
 });

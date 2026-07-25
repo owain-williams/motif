@@ -1,8 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +17,8 @@ import type {
   IdeaMetadata,
   IdeaMetadataEdit,
 } from "@motif/shared";
+import { colors, fonts, radii } from "../theme";
+import { Dialog } from "./Sheet";
 
 /**
  * Edits an Idea's searchable metadata — tags, instrument, style, tempo, and
@@ -99,7 +98,7 @@ function TagField({
         onSubmitEditing={() => commit(draft)}
         blurOnSubmit={false}
         placeholder={`Add ${label.toLowerCase()}…`}
-        placeholderTextColor="#5a5a62"
+        placeholderTextColor={colors.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="done"
@@ -169,127 +168,91 @@ export function MetadataDialog({
   }
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onCancel}
-    >
-      <KeyboardAvoidingView
-        style={styles.backdrop}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <View style={styles.card}>
-          <Text style={styles.title}>Edit metadata</Text>
-          <ScrollView keyboardShouldPersistTaps="handled">
-            <TagField
-              label="Tags"
-              values={tags}
-              suggestions={suggestions.tags}
-              onChange={setTags}
-            />
-            <TagField
-              label="Instrument"
-              values={instrument}
-              suggestions={suggestions.instrument}
-              onChange={setInstrument}
-            />
-            <TagField
-              label="Style"
-              values={style}
-              suggestions={suggestions.style}
-              onChange={setStyle}
-            />
-            <View style={styles.field}>
-              <Text style={styles.label}>Tempo (BPM)</Text>
-              <TextInput
-                style={styles.input}
-                value={tempo}
-                onChangeText={setTempo}
-                placeholder="e.g. 120"
-                placeholderTextColor="#5a5a62"
-                keyboardType="number-pad"
-                returnKeyType="done"
-              />
-            </View>
-            {location !== null ? (
-              <View style={styles.field}>
-                <Text style={styles.label}>Location</Text>
-                <TextInput
-                  style={styles.input}
-                  value={location.label}
-                  onChangeText={(text) =>
-                    setLocation({ ...location, label: text })
-                  }
-                  placeholder="Place label"
-                  placeholderTextColor="#5a5a62"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                />
-                <View style={styles.locationMeta}>
-                  <Text style={styles.coords}>{formatCoordinates(location)}</Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Remove location"
-                    onPress={() => setLocation(null)}
-                    style={styles.removeLocation}
-                  >
-                    <Text style={styles.removeLocationText}>Remove</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ) : null}
-          </ScrollView>
-          <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={onCancel}
-              style={styles.action}
-            >
-              <Text style={styles.cancelLabel}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={submit}
-              style={styles.action}
-            >
-              <Text style={styles.saveLabel}>Save</Text>
-            </Pressable>
-          </View>
+    <Dialog visible={visible} title="Tags and details" onClose={onCancel}>
+      <ScrollView style={styles.fields} keyboardShouldPersistTaps="handled">
+        <TagField
+          label="Tags"
+          values={tags}
+          suggestions={suggestions.tags}
+          onChange={setTags}
+        />
+        <TagField
+          label="Instrument"
+          values={instrument}
+          suggestions={suggestions.instrument}
+          onChange={setInstrument}
+        />
+        <TagField
+          label="Style"
+          values={style}
+          suggestions={suggestions.style}
+          onChange={setStyle}
+        />
+        <View style={styles.field}>
+          <Text style={styles.label}>Tempo (BPM)</Text>
+          <TextInput
+            style={styles.input}
+            value={tempo}
+            onChangeText={setTempo}
+            placeholder="e.g. 120"
+            placeholderTextColor={colors.textFaint}
+            keyboardType="number-pad"
+            returnKeyType="done"
+          />
         </View>
-      </KeyboardAvoidingView>
-    </Modal>
+        {location !== null ? (
+          <View style={styles.field}>
+            <Text style={styles.label}>Location</Text>
+            <TextInput
+              style={styles.input}
+              value={location.label}
+              onChangeText={(text) => setLocation({ ...location, label: text })}
+              placeholder="Place label"
+              placeholderTextColor={colors.textFaint}
+              autoCorrect={false}
+              returnKeyType="done"
+            />
+            <View style={styles.locationMeta}>
+              <Text style={styles.coords}>{formatCoordinates(location)}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Remove location"
+                onPress={() => setLocation(null)}
+                style={styles.removeLocation}
+              >
+                <Text style={styles.removeLocationText}>Remove</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+      </ScrollView>
+      <View style={styles.actions}>
+        <Pressable accessibilityRole="button" onPress={onCancel} style={styles.action}>
+          <Text style={styles.cancelLabel}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={submit}
+          style={[styles.action, styles.save]}
+        >
+          <Text style={styles.saveLabel}>Save</Text>
+        </Pressable>
+      </View>
+    </Dialog>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
-  card: {
-    width: "100%",
-    maxHeight: "80%",
-    backgroundColor: "#17171d",
-    borderRadius: 16,
-    padding: 20,
-  },
-  title: {
-    color: "#f5f5f7",
-    fontSize: 16,
-    fontWeight: "600",
-    marginBottom: 14,
+  fields: {
+    maxHeight: 380,
   },
   field: {
     marginBottom: 16,
   },
   label: {
-    color: "#a0a0a8",
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
-    fontWeight: "600",
+    color: colors.textMuted,
     marginBottom: 8,
   },
   chips: {
@@ -299,24 +262,28 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   chip: {
-    backgroundColor: "#2a2a32",
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
+    backgroundColor: colors.surfaceActive,
+    borderRadius: radii.pill,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
   },
   chipText: {
-    color: "#f5f5f7",
+    fontFamily: fonts.sans,
     fontSize: 13,
+    color: colors.text,
   },
   input: {
-    color: "#f5f5f7",
+    fontFamily: fonts.sans,
     fontSize: 15,
-    backgroundColor: "#0b0b0f",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#2a2a32",
+    color: colors.text,
+    backgroundColor: colors.canvas,
+    borderRadius: radii.field,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   locationMeta: {
     flexDirection: "row",
@@ -325,20 +292,21 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   coords: {
-    color: "#686872",
-    fontSize: 12,
+    fontFamily: fonts.mono,
+    fontSize: 11.5,
+    color: colors.textFaint,
     fontVariant: ["tabular-nums"],
   },
   removeLocation: {
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: "#2a2a32",
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceActive,
   },
   removeLocationText: {
-    color: "#e5808a",
+    fontFamily: fonts.sansMedium,
     fontSize: 13,
-    fontWeight: "600",
+    color: colors.danger,
   },
   suggestions: {
     flexDirection: "row",
@@ -347,36 +315,39 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   suggestion: {
-    backgroundColor: "#16161c",
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#33333d",
+    backgroundColor: colors.surfaceRaised,
+    borderRadius: radii.pill,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   suggestionText: {
-    color: "#9a9aa4",
+    fontFamily: fonts.sans,
     fontSize: 13,
+    color: colors.textMuted,
   },
   actions: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    marginTop: 8,
     gap: 8,
   },
   action: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: radii.pill,
+  },
+  save: {
+    backgroundColor: colors.text,
   },
   cancelLabel: {
-    color: "#8a8a92",
+    fontFamily: fonts.sansMedium,
     fontSize: 15,
-    fontWeight: "500",
+    color: colors.textDim,
   },
   saveLabel: {
-    color: "#4c9aff",
+    fontFamily: fonts.sansSemiBold,
     fontSize: 15,
-    fontWeight: "700",
+    color: colors.canvas,
   },
 });

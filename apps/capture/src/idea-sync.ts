@@ -137,6 +137,8 @@ export interface SyncPlan {
 export interface SyncResult {
   /** Ids Bridge accepted this pass. */
   readonly synced: string[];
+  /** Ids Bridge reported already holding — what is *not* still queued. */
+  readonly remoteHave: string[];
   /** The delete/restore records after merging Bridge's — persist these. */
   readonly deletions: IdeaDeletion[];
 }
@@ -213,7 +215,15 @@ export async function syncPendingIdeas(plan: SyncPlan): Promise<SyncResult> {
       synced.push(ack.ideaId);
     }
   }
-  return { synced, deletions };
+  return { synced, remoteHave: [...bridge.have], deletions };
+}
+
+/** The cloud twin of {@link SyncResult}; the relay owns its own delete records. */
+export interface CloudSyncResult {
+  /** Ids the relay accepted this pass. */
+  readonly synced: string[];
+  /** Ids the relay reported already holding. */
+  readonly remoteHave: string[];
 }
 
 export interface CloudSyncPlan {
@@ -406,12 +416,11 @@ export async function downloadCloudIdea(
  * enforces Basic/Pro, so a Free token cannot open this transport even if a
  * caller is buggy. Capture keeps every local audio file after upload.
  */
-export async function syncPendingCloudIdeas(plan: CloudSyncPlan): Promise<string[]> {
-  const pending = ideasToOffer(
-    plan.library,
-    await fetchCloudManifest(plan.idToken),
-    plan.deletions,
-  );
+export async function syncPendingCloudIdeas(
+  plan: CloudSyncPlan,
+): Promise<CloudSyncResult> {
+  const remoteHave = await fetchCloudManifest(plan.idToken);
+  const pending = ideasToOffer(plan.library, remoteHave, plan.deletions);
   const synced: string[] = [];
   for (const idea of pending) {
     const accepted = await uploadCloudIdea(
@@ -422,5 +431,5 @@ export async function syncPendingCloudIdeas(plan: CloudSyncPlan): Promise<string
     );
     if (accepted) synced.push(idea.id);
   }
-  return synced;
+  return { synced, remoteHave };
 }
