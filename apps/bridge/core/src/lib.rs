@@ -439,9 +439,9 @@ pub fn audio_extension(format: AudioFormat) -> &'static str {
 /// this core decision keeps format gating independently testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandoffPlan {
-    /// Pro Ideas are already WAV, so hand off the received file unchanged.
+    /// WAV Ideas are already DAW-ready, so hand off the received file unchanged.
     UseOriginal(PathBuf),
-    /// Free Ideas are AAC and need a temporary WAV export.
+    /// AAC Ideas need a temporary WAV export.
     TranscodeToWav {
         source: PathBuf,
         destination: PathBuf,

@@ -1,6 +1,6 @@
 //! Runtime codec adapter for DAW handoff.
 //!
-//! Bridge stores Free Ideas as AAC in an M4A container. This module decodes
+//! Bridge stores AAC Ideas in an M4A container. This module decodes
 //! one received file and atomically stages a 16-bit PCM WAV. Format selection
 //! stays in `bridge-core`; only codec and filesystem mechanics live here.
 

@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { formatDuration } from "@motif/shared";
-import type { RecordingChannelCount } from "@motif/shared";
+import type { AudioFormat, RecordingChannelCount } from "@motif/shared";
 import type { SyncSummary } from "../core/sync-summary";
 import { formatCapturedAt } from "../core/capture-time";
 import { colors, fonts, radii, SCREEN_TOP_INSET } from "../theme";
@@ -39,6 +39,8 @@ export function SyncScreen({
   now,
   accountLabel,
   recordingFormat,
+  formatChoices,
+  audioFormat,
   channelChoices,
   channels,
   locationTaggingEnabled,
@@ -47,6 +49,7 @@ export function SyncScreen({
   onPair,
   onUnpair,
   onOpenAccount,
+  onSelectFormat,
   onSelectChannels,
   onToggleLocationTagging,
 }: {
@@ -63,6 +66,8 @@ export function SyncScreen({
   now: number;
   accountLabel: string;
   recordingFormat: string;
+  formatChoices: readonly AudioFormat[];
+  audioFormat: AudioFormat;
   channelChoices: readonly RecordingChannelCount[];
   channels: RecordingChannelCount;
   locationTaggingEnabled: boolean;
@@ -71,6 +76,7 @@ export function SyncScreen({
   onPair: () => void;
   onUnpair: () => void;
   onOpenAccount: () => void;
+  onSelectFormat: (format: AudioFormat) => void;
   onSelectChannels: (channels: RecordingChannelCount) => void;
   onToggleLocationTagging: (enabled: boolean) => void;
 }) {
@@ -193,32 +199,28 @@ export function SyncScreen({
                 {recordingFormat}
               </Text>
             </View>
-            {channelChoices.length > 1 ? (
-              <View style={styles.segmented}>
-                {channelChoices.map((choice) => (
-                  <Pressable
-                    key={choice}
-                    accessibilityRole="button"
-                    accessibilityLabel={choice === 1 ? "Record in mono" : "Record in stereo"}
-                    accessibilityState={{ selected: choice === channels }}
-                    onPress={() => onSelectChannels(choice)}
-                    style={[
-                      styles.segment,
-                      choice === channels && styles.segmentActive,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.segmentLabel,
-                        choice === channels && styles.segmentLabelActive,
-                      ]}
-                    >
-                      {choice === 1 ? "Mono" : "Stereo"}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
+            <View style={styles.recordingControls}>
+              {formatChoices.length > 1 ? (
+                <RecordingSegment
+                  choices={formatChoices}
+                  selected={audioFormat}
+                  label={(choice) => choice.toUpperCase()}
+                  accessibilityLabel={(choice) => `Record as ${choice.toUpperCase()}`}
+                  onSelect={onSelectFormat}
+                />
+              ) : null}
+              {channelChoices.length > 1 ? (
+                <RecordingSegment
+                  choices={channelChoices}
+                  selected={channels}
+                  label={(choice) => (choice === 1 ? "Mono" : "Stereo")}
+                  accessibilityLabel={(choice) =>
+                    choice === 1 ? "Record in mono" : "Record in stereo"
+                  }
+                  onSelect={onSelectChannels}
+                />
+              ) : null}
+            </View>
           </View>
 
           <View style={styles.setting}>
@@ -319,6 +321,44 @@ function SettingRow({
           {action}
         </Text>
       </Pressable>
+    </View>
+  );
+}
+
+function RecordingSegment<T extends string | number>({
+  choices,
+  selected,
+  label,
+  accessibilityLabel,
+  onSelect,
+}: {
+  choices: readonly T[];
+  selected: T;
+  label: (choice: T) => string;
+  accessibilityLabel: (choice: T) => string;
+  onSelect: (choice: T) => void;
+}) {
+  return (
+    <View style={styles.segmented}>
+      {choices.map((choice) => (
+        <Pressable
+          key={choice}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel(choice)}
+          accessibilityState={{ selected: choice === selected }}
+          onPress={() => onSelect(choice)}
+          style={[styles.segment, choice === selected && styles.segmentActive]}
+        >
+          <Text
+            style={[
+              styles.segmentLabel,
+              choice === selected && styles.segmentLabelActive,
+            ]}
+          >
+            {label(choice)}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -553,6 +593,10 @@ const styles = StyleSheet.create({
   },
   secondaryLabelDanger: {
     color: colors.danger,
+  },
+  recordingControls: {
+    alignItems: "flex-end",
+    gap: 6,
   },
   segmented: {
     flexDirection: "row",

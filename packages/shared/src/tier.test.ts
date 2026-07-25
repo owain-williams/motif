@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   availableRecordingChannels,
+  availableRecordingFormats,
   cloudStorageDecision,
   recordingProfile,
   TIER_CAPABILITIES,
@@ -25,17 +26,56 @@ describe("tier matrix", () => {
     expect(TIER_CAPABILITIES.pro.requiresAccount).toBe(true);
   });
 
-  it("gates uncompressed audio and stereo to Pro", () => {
-    expect(recordingProfile("free", 2)).toEqual({
+  it("keeps allowed recording choices and defaults in the tier table", () => {
+    expect(TIER_CAPABILITIES.free.recordingChannels).toEqual([1]);
+    expect(TIER_CAPABILITIES.free.audioFormats).toEqual(["aac"]);
+    expect(TIER_CAPABILITIES.free.defaultAudioFormat).toBe("aac");
+    expect(TIER_CAPABILITIES.pro.recordingChannels).toEqual([1, 2]);
+    expect(TIER_CAPABILITIES.pro.audioFormats).toEqual(["aac", "wav"]);
+    expect(TIER_CAPABILITIES.pro.defaultAudioFormat).toBe("aac");
+
+    expect(availableRecordingChannels("free")).toBe(
+      TIER_CAPABILITIES.free.recordingChannels,
+    );
+    expect(availableRecordingFormats("pro")).toBe(
+      TIER_CAPABILITIES.pro.audioFormats,
+    );
+  });
+
+  it("uses AAC by default for both tiers", () => {
+    expect(recordingProfile("free", undefined, undefined)).toEqual({
       audioFormat: "aac",
       channels: 1,
     });
-    expect(recordingProfile("pro", 2)).toEqual({
+    expect(recordingProfile("pro", undefined, undefined)).toEqual({
+      audioFormat: "aac",
+      channels: 1,
+    });
+  });
+
+  it("allows Pro recording choices", () => {
+    expect(recordingProfile("pro", "wav", 2)).toEqual({
       audioFormat: "wav",
       channels: 2,
     });
-    expect(availableRecordingChannels("free")).toEqual([1]);
-    expect(availableRecordingChannels("pro")).toEqual([1, 2]);
+    expect(recordingProfile("pro", "aac", 1)).toEqual({
+      audioFormat: "aac",
+      channels: 1,
+    });
+  });
+
+  it("degrades illegal requests without losing a restorable preference", () => {
+    const requestedFormat = "wav";
+    const requestedChannels = 2;
+
+    expect(recordingProfile("free", requestedFormat, requestedChannels)).toEqual({
+      audioFormat: "aac",
+      channels: 1,
+    });
+    expect(recordingProfile("pro", requestedFormat, requestedChannels)).toEqual({
+      audioFormat: "wav",
+      channels: 2,
+    });
   });
 });
 

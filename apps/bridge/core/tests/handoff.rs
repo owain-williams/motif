@@ -21,7 +21,9 @@ fn idea(format: AudioFormat) -> IdeaMetadata {
 }
 
 #[test]
-fn compressed_idea_is_staged_as_wav_for_daw_handoff() {
+fn pro_aac_idea_is_staged_from_its_own_format_for_daw_handoff() {
+    // Idea metadata deliberately carries no account tier: Bridge must decide
+    // from the Idea's AAC format even when it came from a Pro Library.
     let plan = plan_handoff(
         &idea(AudioFormat::Aac),
         Path::new("/library/ideas/idea-42.m4a"),

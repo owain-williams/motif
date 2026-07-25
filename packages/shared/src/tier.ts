@@ -11,8 +11,6 @@ export type Tier = "free" | "pro";
 
 export type SyncTransport = "local-network" | "local-network+cloud-relay";
 
-export type RecordingChannels = "mono" | "mono-or-stereo";
-
 /** Stored audio format for an Idea's recording. */
 export type AudioFormat = "aac" | "wav";
 export type RecordingChannelCount = 1 | 2;
@@ -35,8 +33,9 @@ export interface TierCapabilities {
   readonly syncTransport: SyncTransport;
   /** Cloud storage quota in bytes; 0 for Free. */
   readonly cloudStorageQuotaBytes: number;
-  readonly recordingChannels: RecordingChannels;
-  readonly audioFormat: AudioFormat;
+  readonly recordingChannels: readonly RecordingChannelCount[];
+  readonly audioFormats: readonly AudioFormat[];
+  readonly defaultAudioFormat: AudioFormat;
   /** Whether an account is required for this tier. */
   readonly requiresAccount: boolean;
 }
@@ -49,16 +48,18 @@ export const TIER_CAPABILITIES: Readonly<Record<Tier, TierCapabilities>> = {
     tier: "free",
     syncTransport: "local-network",
     cloudStorageQuotaBytes: 0,
-    recordingChannels: "mono",
-    audioFormat: "aac",
+    recordingChannels: [1],
+    audioFormats: ["aac"],
+    defaultAudioFormat: "aac",
     requiresAccount: false,
   },
   pro: {
     tier: "pro",
     syncTransport: "local-network+cloud-relay",
     cloudStorageQuotaBytes: 150 * GB,
-    recordingChannels: "mono-or-stereo",
-    audioFormat: "wav",
+    recordingChannels: [1, 2],
+    audioFormats: ["aac", "wav"],
+    defaultAudioFormat: "aac",
     requiresAccount: true,
   },
 };
@@ -67,22 +68,36 @@ export const TIER_CAPABILITIES: Readonly<Record<Tier, TierCapabilities>> = {
 export function availableRecordingChannels(
   tier: Tier,
 ): readonly RecordingChannelCount[] {
-  return tier === "pro" ? [1, 2] : [1];
+  return TIER_CAPABILITIES[tier].recordingChannels;
+}
+
+/** Format choices Capture may present for a tier. */
+export function availableRecordingFormats(tier: Tier): readonly AudioFormat[] {
+  return TIER_CAPABILITIES[tier].audioFormats;
 }
 
 /**
- * Resolves a tier's recording facts. An unavailable stereo request safely
- * degrades to mono, so a tier change can never leave Capture in an illegal
- * configuration.
+ * Resolves requested recording preferences against the tier matrix. Illegal or
+ * missing choices degrade to the tier defaults, so tier changes never leave
+ * Capture in an invalid configuration while preserving the stored preference.
  */
 export function recordingProfile(
   tier: Tier,
-  requestedChannels: RecordingChannelCount,
+  requestedAudioFormat?: AudioFormat,
+  requestedChannels?: RecordingChannelCount,
 ): RecordingProfile {
   const capabilities = TIER_CAPABILITIES[tier];
   return {
-    audioFormat: capabilities.audioFormat,
-    channels: tier === "pro" ? requestedChannels : 1,
+    audioFormat:
+      requestedAudioFormat !== undefined &&
+      capabilities.audioFormats.includes(requestedAudioFormat)
+        ? requestedAudioFormat
+        : capabilities.defaultAudioFormat,
+    channels:
+      requestedChannels !== undefined &&
+      capabilities.recordingChannels.includes(requestedChannels)
+        ? requestedChannels
+        : capabilities.recordingChannels[0]!,
   };
 }
 

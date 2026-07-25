@@ -103,10 +103,8 @@ export async function stageIdeaForShare(
 ): Promise<string> {
   const destination = new File(Paths.cache, plan.fileName);
   if (plan.needsTranscode) {
-    // Transcoding uncompressed (WAV/Pro) audio to compressed needs a native
-    // encoder that isn't in the Expo stack yet. No WAV Idea can exist until
-    // per-tier WAV recording (motif-6fu.9) ships, so this path is currently
-    // unreachable; the real transcode lands in motif-f7w.
+    // Transcoding WAV audio to compressed AAC needs a native encoder that
+    // isn't in the Expo stack yet; the real transcode is tracked by motif-f7w.
     throw new Error(
       "Sharing uncompressed audio isn't supported yet, so this Idea can't be shared.",
     );

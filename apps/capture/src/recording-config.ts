@@ -3,7 +3,7 @@ import type { AudioFormat, RecordingProfile } from "@motif/shared";
 
 /**
  * Converts the tier-approved profile into a cross-platform PCM recording.
- * Free additionally produces AAC; Pro retains the uncompressed WAV.
+ * AAC enables the compressed output; WAV retains the uncompressed primary.
  */
 export function recordingConfig(profile: RecordingProfile): RecordingConfig {
   return {
@@ -36,7 +36,7 @@ export function recordingConfig(profile: RecordingProfile): RecordingConfig {
  * The on-device file extension for an Idea's audio, derived from its format:
  * AAC lives in an `.m4a` container, WAV in `.wav`. Callers pass an Idea's own
  * `audioFormat` so playback/delete resolve the right file even once per-tier
- * formats (motif-6fu.9) mix AAC and WAV Ideas in one Library.
+ * format choices mix AAC and WAV Ideas in one Library.
  */
 export function audioExtension(format: AudioFormat): string {
   return format === "wav" ? ".wav" : ".m4a";

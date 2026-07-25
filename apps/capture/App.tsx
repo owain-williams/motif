@@ -16,6 +16,7 @@ import {
 import {
   activeIdeas,
   availableRecordingChannels,
+  availableRecordingFormats,
   createIdea,
   distinctFieldValues,
   editIdea,
@@ -42,7 +43,6 @@ import type {
   IdeaMetadata,
   IdeaMetadataEdit,
   PairingRequest,
-  RecordingChannelCount,
   Tier,
 } from "@motif/shared";
 import {
@@ -198,11 +198,15 @@ interface SyncInputs {
 export default function App() {
   const [fontsLoaded] = useFonts(MOTIF_FONTS);
   const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
-  const [requestedChannels, setRequestedChannels] =
-    useState<RecordingChannelCount>(1);
+  const [settings, setSettings] = useState<CaptureSettings | null>(null);
   const tier = effectiveAccountTier(account);
   const channelChoices = availableRecordingChannels(tier);
-  const profile = recordingProfile(tier, requestedChannels);
+  const formatChoices = availableRecordingFormats(tier);
+  const profile = recordingProfile(
+    tier,
+    settings?.requestedAudioFormat,
+    settings?.requestedChannels,
+  );
   const recorder = useStudioAudioRecorder();
   const sessionRef = useRef(IDLE_SESSION);
   const activeRecordingProfileRef = useRef(profile);
@@ -236,7 +240,6 @@ export default function App() {
   // read as of then, so they hold still while the sheet is up (and through its
   // closing animation) rather than drifting under the user.
   const [recentlyDeletedAsOf, setRecentlyDeletedAsOf] = useState(0);
-  const [settings, setSettings] = useState<CaptureSettings | null>(null);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [tab, setTab] = useState<CaptureTab>("record");
   const [showSync, setShowSync] = useState(false);
@@ -1143,6 +1146,8 @@ export default function App() {
               : "Free · not signed in"
           }
           recordingFormat={recordingFormat}
+          formatChoices={formatChoices}
+          audioFormat={profile.audioFormat}
           channelChoices={channelChoices}
           channels={profile.channels}
           locationTaggingEnabled={settings.locationTaggingEnabled}
@@ -1151,7 +1156,12 @@ export default function App() {
           onPair={() => setShowPair(true)}
           onUnpair={handleUnpair}
           onOpenAccount={() => setShowAccount(true)}
-          onSelectChannels={setRequestedChannels}
+          onSelectFormat={(requestedAudioFormat) =>
+            updateSettings({ requestedAudioFormat })
+          }
+          onSelectChannels={(requestedChannels) =>
+            updateSettings({ requestedChannels })
+          }
           onToggleLocationTagging={(next) => void toggleLocationTagging(next)}
         />
       ) : tab === "record" ? (
