@@ -1,5 +1,7 @@
 # Serverless AWS backend, provisioned with CDK
 
+**Tier terminology note**: ADR 0008 later retired Basic and collapsed the paid tiers into Pro. The Basic/Pro references below preserve the context in which this backend decision was accepted; the serverless architecture itself remains current.
+
 Motif's Basic/Pro backend runs on AWS as a fully serverless stack rather than a server/RDS deployment: Amazon Cognito for account creation and login, DynamoDB (on-demand, single-table) for account/Idea/tier/pairing metadata, S3 for Idea audio, and an API Gateway HTTP API fronting Lambda. There is deliberately no VPC, RDS instance, NAT gateway, or bastion host — the always-on cost traps of a conventional AWS backend — so an idle deployment costs effectively nothing. Infrastructure is defined as code with AWS CDK in TypeScript (the `infra/` workspace), keeping IaC in the monorepo's primary language and pinned to a single account/region for a solo MVP. Stripe is the intended future billing provider for the Basic/Pro tiers, but payment integration is out of scope for this slice and nothing for it is built here.
 
 ## Consequences
