@@ -33,17 +33,19 @@ Where a deleted Idea goes for 30 days before being purged for good, audio and me
 _Avoid_: Trash, Bin
 
 **Offloaded**:
-An Idea whose audio has been moved to cloud storage and removed from the device to free up space, redownloadable to Capture on demand. Every Idea is on-device by default; only Basic/Pro accounts can offload one (Free has no cloud storage to offload to). Syncing to Bridge never offloads or deletes the Capture copy — that only happens by explicit user action.
+An Idea whose audio has been removed from the device to free up space, leaving the cloud copy as the only one — redownloadable to Capture on demand. Every Idea is on-device by default; only a Pro account can offload one, and offloading frees device space rather than cloud storage (see ADR 0008). Syncing to Bridge never offloads or deletes the Capture copy — that only happens by explicit user action.
 _Avoid_: Archived, cloud-only
 
 **Tier**:
-The subscription level of an account — Free, Basic, or Pro — that determines sync transport, cloud storage quota, recording channel count, and audio format. Basic and Pro require a user account; Free does not.
+The subscription level of an account — Free or Pro — that determines sync transport, cloud storage quota, recording channel count, and which audio formats are available to record in. Pro requires a user account; Free does not.
 _Avoid_: Plan, subscription level
 
 ### Tiers
 
-| Tier  | Sync transport            | Cloud storage | Recording channels | Audio format          |
-| ----- | -------------------------- | -------------- | ------------------- | ---------------------- |
-| Free  | Local network only         | None (0GB)      | Mono only            | Compressed (AAC)        |
-| Basic | Local network + cloud relay | 25GB            | Mono only            | Compressed (AAC)        |
-| Pro   | Local network + cloud relay | 1TB             | Mono or stereo       | Uncompressed (WAV)       |
+| Tier | Sync transport              | Cloud storage | Recording channels | Audio format                                     |
+| ---- | --------------------------- | ------------- | ------------------ | ------------------------------------------------ |
+| Free | Local network only          | None (0GB)    | Mono only          | Compressed (AAC)                                 |
+| Pro  | Local network + cloud relay | 150GB         | Mono or stereo     | Compressed (AAC, the default) or uncompressed (WAV) |
+
+Audio format is a Pro user's choice rather than a fact of their Tier; every Idea
+carries the format it was captured in, so one Library can hold both (see ADR 0008).
