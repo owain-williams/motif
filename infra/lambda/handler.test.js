@@ -64,6 +64,7 @@ async function uploadOffer(handler, tier, offer, options = {}) {
 function fakeServices() {
   const ideas = new Map();
   const audio = new Map();
+  const cancelledUploads = [];
   return {
     ideas,
     audio,
@@ -72,10 +73,17 @@ function fakeServices() {
       setTier: async () => {},
     },
     relay: {
+      cancelledUploads,
+      bytesUsed: async (sub) => [...audio.entries()]
+        .filter(([key]) => key.startsWith(`${sub}/`))
+        .reduce((total, [, length]) => total + length, 0),
       list: async (sub) => [...ideas.keys()]
         .filter((key) => key.startsWith(`${sub}/`))
         .map((key) => key.slice(sub.length + 1)),
       begin: async (sub, id) => `https://upload.example/${sub}/${id}`,
+      cancelUpload: async (sub, id) => {
+        cancelledUploads.push(`${sub}/${id}`);
+      },
       complete: async (sub, id, offerJson, audioByteLength) => {
         ideas.set(`${sub}/${id}`, offerJson);
         audio.set(`${sub}/${id}`, audioByteLength);
@@ -163,6 +171,72 @@ test('Free accounts cannot access the cloud relay', async () => {
   const response = await handler(event('GET /relay/manifest', 'free'));
   assert.equal(response.statusCode, 403);
   assert.deepEqual(JSON.parse(response.body), { error: 'cloud_relay_requires_paid_tier' });
+});
+
+test('the account profile reports every byte held in cloud storage', async () => {
+  const services = fakeServices();
+  services.audio.set('account-1/idea-1', 1200);
+  services.audio.set('account-1/idea-2', 3456);
+  services.audio.set('another-account/private', 9999);
+  const handler = createHandler(services);
+
+  const response = await handler(event('GET /me', 'pro'));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).cloudStorageBytesUsed, 4656);
+});
+
+test('an Idea offer that would exceed the Pro quota is refused before upload', async () => {
+  const services = fakeServices();
+  const GB = 1024 ** 3;
+  services.audio.set('account-1/existing', 149 * GB);
+  const handler = createHandler(services);
+  const offer = offerFor(relayIdea('too-large'));
+  offer.audioByteLength = 2 * GB;
+
+  const response = await handler(event('POST /relay/ideas', 'pro', {
+    body: JSON.stringify(offer),
+  }));
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(JSON.parse(response.body), {
+    error: 'cloud_storage_quota_exceeded',
+    cloudStorageBytesUsed: 149 * GB,
+    cloudStorageQuotaBytes: 150 * GB,
+  });
+});
+
+test('completion rechecks quota when concurrent offers were initially allowed', async () => {
+  const services = fakeServices();
+  const GB = 1024 ** 3;
+  services.audio.set('account-1/existing', 149 * GB);
+  const handler = createHandler(services);
+  const first = offerFor(relayIdea('first'));
+  const second = offerFor(relayIdea('second'));
+  first.audioByteLength = GB;
+  second.audioByteLength = GB;
+
+  for (const offer of [first, second]) {
+    const initiated = await handler(event('POST /relay/ideas', 'pro', {
+      body: JSON.stringify(offer),
+    }));
+    assert.equal(initiated.statusCode, 200);
+  }
+
+  const firstCompletion = await handler(event('POST /relay/ideas/{id}/complete', 'pro', {
+    path: '/relay/ideas/first/complete',
+    pathParameters: { id: 'first' },
+    body: JSON.stringify(first),
+  }));
+  const secondCompletion = await handler(event('POST /relay/ideas/{id}/complete', 'pro', {
+    path: '/relay/ideas/second/complete',
+    pathParameters: { id: 'second' },
+    body: JSON.stringify(second),
+  }));
+
+  assert.equal(firstCompletion.statusCode, 200);
+  assert.equal(secondCompletion.statusCode, 409);
+  assert.deepEqual(services.relay.cancelledUploads, ['account-1/second']);
 });
 
 test('the debug tier endpoint accepts Free and Pro but refuses the retired Basic', async () => {

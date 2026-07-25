@@ -67,7 +67,7 @@ export class MotifBackendStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
-    // --- Object storage: Idea audio (empty; not yet wired to the apps) ---
+    // --- Object storage: account-scoped relay audio ---
     const audioBucket = new s3.Bucket(this, 'IdeaAudio', {
       bucketName: `motif-idea-audio-${this.account}-${this.region}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,

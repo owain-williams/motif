@@ -1,4 +1,5 @@
 import type {
+  CloudStorageDecision,
   DeviceIdentity,
   IdeaDeletion,
   IdeaMetadata,
@@ -10,11 +11,15 @@ import type {
   PairingResponse,
   SyncManifest,
 } from "@motif/shared";
-import { mergeDeletions, withMetadataDefaults } from "@motif/shared";
+import {
+  cloudStorageDecision,
+  mergeDeletions,
+  withMetadataDefaults,
+} from "@motif/shared";
 import { ideasToOffer, reconcileMetadata } from "./core/sync-engine";
 import type { BridgeEndpoint } from "./core/sync-engine";
 import { frameOffer } from "./core/sync-wire";
-import { MOTIF_API_URL } from "./account-client";
+import { loadAccount, MOTIF_API_URL } from "./account-client";
 
 /**
  * Capture-side transport for Free-tier local-network sync (motif-6fu.6) — the
@@ -224,6 +229,8 @@ export interface CloudSyncResult {
   readonly synced: string[];
   /** Ids the relay reported already holding. */
   readonly remoteHave: string[];
+  /** Warning/blocking news for the attempted uploads, if quota affected them. */
+  readonly storageDecision: CloudStorageDecision | null;
 }
 
 export interface CloudSyncPlan {
@@ -247,6 +254,12 @@ async function fetchCloudManifest(idToken: string): Promise<string[]> {
 }
 
 /** Uploads one Idea and publishes it only after the cloud has all audio bytes. */
+class CloudQuotaRejection extends Error {
+  constructor(readonly bytesUsed: number) {
+    super("Cloud storage quota exceeded");
+  }
+}
+
 async function uploadCloudIdea(
   idToken: string,
   capture: DeviceIdentity,
@@ -268,6 +281,16 @@ async function uploadCloudIdea(
     body: JSON.stringify(offer),
   });
   if (!initiation.ok) {
+    const failure = (await initiation.json().catch(() => ({}))) as {
+      error?: string;
+      cloudStorageBytesUsed?: number;
+    };
+    if (
+      failure.error === "cloud_storage_quota_exceeded" &&
+      typeof failure.cloudStorageBytesUsed === "number"
+    ) {
+      throw new CloudQuotaRejection(failure.cloudStorageBytesUsed);
+    }
     throw new Error(`Cloud Idea offer failed (${initiation.status})`);
   }
   const { uploadUrl } = (await initiation.json()) as { uploadUrl: string };
@@ -302,12 +325,28 @@ export async function ensureIdeaInCloud(
     readonly idea: IdeaMetadata;
     readonly audio: Uint8Array;
   },
-): Promise<void> {
+): Promise<CloudStorageDecision | null> {
   const have = await fetchCloudManifest(plan.idToken);
-  if (have.includes(plan.idea.id)) return;
-  if (!(await uploadCloudIdea(plan.idToken, plan.capture, plan.idea, plan.audio))) {
-    throw new Error("Cloud did not accept the Idea.");
+  if (have.includes(plan.idea.id)) return null;
+  const account = await loadAccount(plan.idToken);
+  let decision = cloudStorageDecision(
+    account.tier,
+    account.cloudStorageBytesUsed,
+    plan.audio.length,
+  );
+  if (decision.status === "blocked") throw new Error(decision.message);
+  try {
+    if (!(await uploadCloudIdea(plan.idToken, plan.capture, plan.idea, plan.audio))) {
+      throw new Error("Cloud did not accept the Idea.");
+    }
+  } catch (error) {
+    if (!(error instanceof CloudQuotaRejection)) throw error;
+    decision = cloudStorageDecision(account.tier, error.bytesUsed, plan.audio.length);
+    throw new Error(
+      decision.status === "blocked" ? decision.message : "Cloud storage is full.",
+    );
   }
+  return decision;
 }
 
 /**
@@ -419,17 +458,48 @@ export async function downloadCloudIdea(
 export async function syncPendingCloudIdeas(
   plan: CloudSyncPlan,
 ): Promise<CloudSyncResult> {
-  const remoteHave = await fetchCloudManifest(plan.idToken);
+  const [remoteHave, account] = await Promise.all([
+    fetchCloudManifest(plan.idToken),
+    loadAccount(plan.idToken),
+  ]);
   const pending = ideasToOffer(plan.library, remoteHave, plan.deletions);
   const synced: string[] = [];
+  let bytesUsed = account.cloudStorageBytesUsed;
+  let storageDecision: CloudStorageDecision | null = null;
+
   for (const idea of pending) {
-    const accepted = await uploadCloudIdea(
-      plan.idToken,
-      plan.capture,
-      idea,
-      await plan.readAudio(idea),
-    );
-    if (accepted) synced.push(idea.id);
+    const audio = await plan.readAudio(idea);
+    let decision = cloudStorageDecision(account.tier, bytesUsed, audio.length);
+    if (decision.status === "blocked") {
+      storageDecision = decision;
+      break;
+    }
+    if (decision.status === "warning") storageDecision = decision;
+
+    try {
+      const accepted = await uploadCloudIdea(
+        plan.idToken,
+        plan.capture,
+        idea,
+        audio,
+      );
+      if (accepted) {
+        synced.push(idea.id);
+        bytesUsed += audio.length;
+      }
+    } catch (error) {
+      if (!(error instanceof CloudQuotaRejection)) throw error;
+      decision = cloudStorageDecision(account.tier, error.bytesUsed, audio.length);
+      storageDecision =
+        decision.status === "blocked"
+          ? decision
+          : {
+              status: "blocked",
+              remainingBytes: 0,
+              message: "Cloud storage is full.",
+            };
+      break;
+    }
   }
-  return { synced, remoteHave };
+  return { synced, remoteHave, storageDecision };
 }

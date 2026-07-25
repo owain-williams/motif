@@ -18,6 +18,8 @@ export interface AuthTokens {
 export interface AccountProfile {
   readonly email: string;
   readonly tier: Tier;
+  /** Every audio byte this account currently holds in the cloud relay. */
+  readonly cloudStorageBytesUsed: number;
 }
 
 async function cognito<T>(target: string, body: unknown): Promise<T> {

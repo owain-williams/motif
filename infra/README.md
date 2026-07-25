@@ -27,6 +27,9 @@ account-scoped S3 URLs; audio transfers directly to S3 so Pro WAV Ideas are not
 constrained by API Gateway's 10MB request limit. The Cognito account is the paid
 pairing boundary: every Capture using the same Pro account reads and
 writes one relay manifest, while a different account cannot see those Ideas.
+`GET /me` reports `cloudStorageBytesUsed`, summed across the whole relay Library,
+and new offers are refused before upload when they would exceed Pro's 150GB
+quota.
 
 Everything uses `RemovalPolicy.DESTROY` — fine for the MVP, revisit before this
 holds real user data.

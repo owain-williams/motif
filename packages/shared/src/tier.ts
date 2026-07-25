@@ -1,10 +1,7 @@
 /**
  * Tier — the subscription level of an account (see CONTEXT.md).
- *
- * Placeholder shape for the scaffold: the concrete rule-evaluation logic
- * (quota/channel/format gating) lands with the Capture core module in a
- * later ticket. These types exist so Capture and Bridge can already refer
- * to the same tier vocabulary.
+ * The capability table and decision helpers are the shared source of truth for
+ * recording choices and client-side cloud-storage quota behavior.
  */
 
 export type Tier = "free" | "pro";

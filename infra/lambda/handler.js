@@ -18,6 +18,11 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const TIERS = new Set(['free', 'pro']);
 
+// This Lambda is deployed as plain JavaScript with no workspace dependencies,
+// so it cannot import @motif/shared. Keep this byte-for-byte mirror of
+// TIER_CAPABILITIES.pro.cloudStorageQuotaBytes in packages/shared/src/tier.ts.
+const PRO_CLOUD_STORAGE_QUOTA_BYTES = 150 * 1024 * 1024 * 1024;
+
 /**
  * The tier to act on for a stored profile. Accounts sold the retired Basic
  * tier are read as Pro rather than migrated (ADR 0008), so none of them
@@ -28,6 +33,18 @@ const TIERS = new Set(['free', 'pro']);
 function effectiveTier(storedTier) {
   if (storedTier === 'basic') return 'pro';
   return TIERS.has(storedTier) ? storedTier : 'free';
+}
+
+async function quotaExceededResponse(services, sub, additionalBytes) {
+  const cloudStorageBytesUsed = await services.relay.bytesUsed(sub);
+  if (additionalBytes <= PRO_CLOUD_STORAGE_QUOTA_BYTES - cloudStorageBytesUsed) {
+    return null;
+  }
+  return json(409, {
+    error: 'cloud_storage_quota_exceeded',
+    cloudStorageBytesUsed,
+    cloudStorageQuotaBytes: PRO_CLOUD_STORAGE_QUOTA_BYTES,
+  });
 }
 
 function createHandler(services) {
@@ -56,6 +73,7 @@ function createHandler(services) {
         sub: claims.sub,
         email: claims.email,
         tier: effectiveTier(profile.tier),
+        cloudStorageBytesUsed: await services.relay.bytesUsed(claims.sub),
       });
     }
 
@@ -119,6 +137,12 @@ function createHandler(services) {
     if (routeKey === 'POST /relay/ideas' || rawPath.endsWith('/relay/ideas')) {
       const offer = parseJson(event.body);
       if (!validOffer(offer)) return json(400, { error: 'invalid_idea_offer' });
+      const quotaExceeded = await quotaExceededResponse(
+        services,
+        claims.sub,
+        offer.audioByteLength,
+      );
+      if (quotaExceeded) return quotaExceeded;
       return json(200, {
         ideaId: offer.idea.id,
         uploadUrl: await services.relay.begin(claims.sub, offer.idea.id),
@@ -133,6 +157,18 @@ function createHandler(services) {
       const offer = parseJson(event.body);
       if (!validOffer(offer) || offer.idea.id !== id) {
         return json(400, { error: 'invalid_idea_offer' });
+      }
+      // Two devices can receive upload URLs while both still fit. Recheck after
+      // transfer so whichever completes second cannot push persisted usage over
+      // quota; discard its uncommitted object so rejected bytes are not billed.
+      const quotaExceeded = await quotaExceededResponse(
+        services,
+        claims.sub,
+        offer.audioByteLength,
+      );
+      if (quotaExceeded) {
+        await services.relay.cancelUpload(claims.sub, id);
+        return quotaExceeded;
       }
       const completed = await services.relay.complete(
         claims.sub,
@@ -177,20 +213,32 @@ function productionServices() {
   const tableName = process.env.TABLE_NAME;
   const bucketName = process.env.AUDIO_BUCKET_NAME;
 
-  /** One attribute of every Idea row on an account, skipping rows without it. */
-  const queryIdeaColumn = async (sub, attribute) => {
-    const result = await dynamo.send(new QueryCommand({
-      TableName: tableName,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :idea)',
-      ExpressionAttributeValues: {
-        ':pk': { S: `ACCOUNT#${sub}` },
-        ':idea': { S: 'IDEA#' },
-      },
-      ProjectionExpression: attribute,
-      ConsistentRead: true,
-    }));
-    return (result.Items ?? []).flatMap((item) => item[attribute]?.S ? [item[attribute].S] : []);
+  /** Every projected Idea row on an account, following DynamoDB pagination. */
+  const queryIdeaRows = async (sub, projectionExpression) => {
+    const items = [];
+    let exclusiveStartKey;
+    do {
+      const result = await dynamo.send(new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :idea)',
+        ExpressionAttributeValues: {
+          ':pk': { S: `ACCOUNT#${sub}` },
+          ':idea': { S: 'IDEA#' },
+        },
+        ProjectionExpression: projectionExpression,
+        ConsistentRead: true,
+        ExclusiveStartKey: exclusiveStartKey,
+      }));
+      items.push(...(result.Items ?? []));
+      exclusiveStartKey = result.LastEvaluatedKey;
+    } while (exclusiveStartKey);
+    return items;
   };
+
+  /** One string attribute of every Idea row, skipping rows without it. */
+  const queryIdeaColumn = async (sub, attribute) =>
+    (await queryIdeaRows(sub, attribute))
+      .flatMap((item) => item[attribute]?.S ? [item[attribute].S] : []);
 
   /** The stored offer for one Idea, or `null` when this account has no such row. */
   const readOffer = async (sub, id) => {
@@ -227,12 +275,21 @@ function productionServices() {
       },
     },
     relay: {
+      bytesUsed: async (sub) =>
+        (await queryIdeaRows(sub, 'audioByteLength'))
+          .reduce((total, item) => total + Number(item.audioByteLength?.N ?? 0), 0),
       list: (sub) => queryIdeaColumn(sub, 'ideaId'),
       begin: async (sub, id) => getSignedUrl(s3, new PutObjectCommand({
         Bucket: bucketName,
         Key: relayObjectKey(sub, id),
         ContentType: 'application/octet-stream',
       }), { expiresIn: 900 }),
+      cancelUpload: async (sub, id) => {
+        await s3.send(new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: relayObjectKey(sub, id),
+        }));
+      },
       complete: async (sub, id, offerJson, audioByteLength) => {
         let object;
         try {

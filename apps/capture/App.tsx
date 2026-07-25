@@ -528,7 +528,7 @@ export default function App() {
 
     if (transports.includes("cloud-relay") && inputs.idToken) {
       try {
-        const { synced, remoteHave } = await syncPendingCloudIdeas({
+        const { synced, remoteHave, storageDecision } = await syncPendingCloudIdeas({
           idToken: inputs.idToken,
           capture: inputs.capture,
           library: inputs.library,
@@ -539,7 +539,13 @@ export default function App() {
         // Reported before the metadata pass, as the LAN branch does: the audio
         // that reached the cloud reached it whether or not the edits that
         // follow do.
-        statuses.push(synced.length > 0 ? `${synced.length} via cloud` : "Cloud up to date");
+        statuses.push(
+          storageDecision?.status === "warning" || storageDecision?.status === "blocked"
+            ? storageDecision.message
+            : synced.length > 0
+              ? `${synced.length} via cloud`
+              : "Cloud up to date",
+        );
         // Metadata reconciles over the relay too (motif-kka.9), so an edit made
         // on either device propagates without the two ever sharing a LAN. Reads
         // the live Library rather than this pass's snapshot, so an edit Bridge
@@ -815,7 +821,7 @@ export default function App() {
           idea.id,
           audioExtension(idea.audioFormat),
         );
-        await ensureIdeaInCloud({
+        const storageDecision = await ensureIdeaInCloud({
           idToken: tokens.idToken,
           capture,
           idea,
@@ -826,7 +832,11 @@ export default function App() {
         const next = setIdeaStorageState(library, idea.id, "offloaded");
         saveLibrary(next);
         setLibrary(next);
-        showToast("Offloaded to your account");
+        showToast(
+          storageDecision?.status === "warning"
+            ? storageDecision.message
+            : "Offloaded to your account",
+        );
       } else {
         const audio = await downloadCloudIdea(tokens.idToken, idea.id);
         const persistedUri = persistIdeaAudioBytes(

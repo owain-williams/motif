@@ -106,12 +106,18 @@ async function main(): Promise<void> {
     const me = await fetch(`${apiUrl}/me`, {
       headers: { authorization: `Bearer ${idToken}` },
     });
-    const body = (await me.json()) as { sub?: string; email?: string; tier?: string };
+    const body = (await me.json()) as {
+      sub?: string;
+      email?: string;
+      tier?: string;
+      cloudStorageBytesUsed?: number;
+    };
     console.log(`GET /me     -> ${me.status} ${JSON.stringify(body)}`);
     assert(me.status === 200, `/me expected 200, got ${me.status}`);
     assert(body.email === email, `/me returned wrong email: ${body.email}`);
     accountSub = body.sub;
     assert(body.tier === 'free', `/me defaulted to wrong tier: ${body.tier}`);
+    assert(body.cloudStorageBytesUsed === 0, `/me returned unexpected storage usage: ${body.cloudStorageBytesUsed}`);
 
     // 7. temporary tier assignment path, pending billing integration.
     const tierUpdate = await fetch(`${apiUrl}/me/tier`, {
