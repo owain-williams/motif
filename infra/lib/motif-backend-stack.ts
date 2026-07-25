@@ -16,7 +16,7 @@ import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations
 import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 
 /**
- * Motif's Basic/Pro backend, per ADR 0004: a fully serverless AWS stack with no
+ * Motif's Pro backend, per ADR 0004: a fully serverless AWS stack with no
  * VPC, RDS, NAT gateway, or bastion — every piece is pay-per-use so an idle
  * deployment costs ~nothing. RemovalPolicy.DESTROY throughout keeps the MVP
  * cheap to tear down; revisit before this holds real user data.

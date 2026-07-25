@@ -55,10 +55,11 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
     const idToken = tokens?.idToken;
     if (idToken) {
       transports.push(async () => {
-        // The token alone does not imply cloud entitlement: authenticated Free
-        // accounts still sync only over LAN, just like the foreground engine.
+        // The token alone does not imply cloud entitlement: only Pro opens the
+        // relay, so an authenticated Free account still syncs over LAN alone,
+        // just like the foreground engine.
         const account = await loadAccount(idToken);
-        if (account.tier === "free") return;
+        if (account.tier !== "pro") return;
         await syncPendingCloudIdeas({
           idToken,
           capture: syncState.capture,

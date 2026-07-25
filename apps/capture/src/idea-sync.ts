@@ -413,8 +413,8 @@ export async function downloadCloudIdea(
 
 /**
  * Copies pending Ideas into the authenticated relay. The backend independently
- * enforces Basic/Pro, so a Free token cannot open this transport even if a
- * caller is buggy. Capture keeps every local audio file after upload.
+ * enforces Pro, so a Free token cannot open this transport even if a caller is
+ * buggy. Capture keeps every local audio file after upload.
  */
 export async function syncPendingCloudIdeas(
   plan: CloudSyncPlan,

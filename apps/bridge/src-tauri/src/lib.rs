@@ -292,7 +292,7 @@ fn pairing_info(state: State<'_, BridgeState>) -> Result<PairingStatus, String> 
 }
 
 /// Enables account-scoped relay polling. The token remains in memory only and
-/// the backend verifies both account identity and Basic/Pro tier each poll.
+/// the backend verifies both account identity and Pro tier each poll.
 #[tauri::command]
 fn enable_cloud_sync(id_token: String, state: State<'_, BridgeState>) -> Result<(), String> {
     if id_token.trim().is_empty() {

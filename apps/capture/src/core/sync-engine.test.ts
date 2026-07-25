@@ -93,18 +93,13 @@ describe("pairing state (Free tier: one Capture ↔ one Bridge)", () => {
 describe("tiered sync transports", () => {
   it("keeps local-network sync available for every tier when paired", () => {
     expect(syncTransports("free", true)).toEqual(["local-network"]);
-    expect(syncTransports("basic", true)).toEqual([
-      "local-network",
-      "cloud-relay",
-    ]);
     expect(syncTransports("pro", true)).toEqual([
       "local-network",
       "cloud-relay",
     ]);
   });
 
-  it("uses cloud relay off the local network for Basic and Pro", () => {
-    expect(syncTransports("basic", false)).toEqual(["cloud-relay"]);
+  it("uses cloud relay off the local network for Pro", () => {
     expect(syncTransports("pro", false)).toEqual(["cloud-relay"]);
   });
 
@@ -114,16 +109,14 @@ describe("tiered sync transports", () => {
 });
 
 describe("explicit Idea storage actions", () => {
-  it("offers Offload only for on-device Ideas on Basic and Pro", () => {
+  it("offers Offload only for on-device Ideas on Pro", () => {
     expect(ideaStorageAction("free", idea("free", 1))).toBeNull();
-    expect(ideaStorageAction("basic", idea("basic", 1))).toBe("offload");
     expect(ideaStorageAction("pro", idea("pro", 1))).toBe("offload");
   });
 
   it("offers redownload for an offloaded Idea only while cloud access is available", () => {
     const offloaded = idea("cloud", 1, { storageState: "offloaded" });
     expect(ideaStorageAction("free", offloaded)).toBeNull();
-    expect(ideaStorageAction("basic", offloaded)).toBe("redownload");
     expect(ideaStorageAction("pro", offloaded)).toBe("redownload");
   });
 });

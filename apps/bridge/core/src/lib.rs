@@ -441,7 +441,7 @@ pub fn audio_extension(format: AudioFormat) -> &'static str {
 pub enum HandoffPlan {
     /// Pro Ideas are already WAV, so hand off the received file unchanged.
     UseOriginal(PathBuf),
-    /// Free/Basic Ideas are AAC and need a temporary WAV export.
+    /// Free Ideas are AAC and need a temporary WAV export.
     TranscodeToWav {
         source: PathBuf,
         destination: PathBuf,

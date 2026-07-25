@@ -88,7 +88,7 @@ export function AccountDialog({
           <Text style={styles.email}>{account.email}</Text>
           <Text style={styles.label}>Tier (debug)</Text>
           <View style={styles.tiers}>
-            {(["free", "basic", "pro"] as const).map((tier) => (
+            {(["free", "pro"] as const).map((tier) => (
               <Pressable
                 key={tier}
                 disabled={busy}

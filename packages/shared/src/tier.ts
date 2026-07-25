@@ -7,7 +7,7 @@
  * to the same tier vocabulary.
  */
 
-export type Tier = "free" | "basic" | "pro";
+export type Tier = "free" | "pro";
 
 export type SyncTransport = "local-network" | "local-network+cloud-relay";
 
@@ -53,18 +53,10 @@ export const TIER_CAPABILITIES: Readonly<Record<Tier, TierCapabilities>> = {
     audioFormat: "aac",
     requiresAccount: false,
   },
-  basic: {
-    tier: "basic",
-    syncTransport: "local-network+cloud-relay",
-    cloudStorageQuotaBytes: 25 * GB,
-    recordingChannels: "mono",
-    audioFormat: "aac",
-    requiresAccount: true,
-  },
   pro: {
     tier: "pro",
     syncTransport: "local-network+cloud-relay",
-    cloudStorageQuotaBytes: 1024 * GB,
+    cloudStorageQuotaBytes: 150 * GB,
     recordingChannels: "mono-or-stereo",
     audioFormat: "wav",
     requiresAccount: true,
@@ -108,7 +100,7 @@ export function cloudStorageDecision(
       status: "blocked",
       remainingBytes,
       message:
-        "Free includes no cloud storage. Upgrade to Basic or Pro to store Ideas in the cloud.",
+        "Free includes no cloud storage. Upgrade to Pro to store Ideas in the cloud.",
     };
   }
 

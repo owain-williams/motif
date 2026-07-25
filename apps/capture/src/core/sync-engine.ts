@@ -60,33 +60,33 @@ export function unpair(_state: SyncEngineState): SyncEngineState {
   return UNPAIRED;
 }
 
-/**
- * Active sync paths for this tier. Local-network remains first/preferred when
- * a Bridge is reachable; paid tiers additionally relay through the account.
- * Free never receives a cloud path.
- */
 export type IdeaStorageAction = "offload" | "redownload";
 
 /**
  * The explicit cloud-storage action Capture should offer for an Idea. Cloud
- * actions are available only while the account has Basic/Pro cloud access;
- * Free can neither offload nor fetch cloud-only audio.
+ * actions need the relay, so only Pro has them; Free can neither offload nor
+ * fetch cloud-only audio.
  */
 export function ideaStorageAction(
   tier: Tier,
   idea: IdeaMetadata,
 ): IdeaStorageAction | null {
-  if (tier === "free") return null;
+  if (tier !== "pro") return null;
   return idea.storageState === "offloaded" ? "redownload" : "offload";
 }
 
+/**
+ * Active sync paths for this tier. Local-network remains first/preferred when
+ * a Bridge is reachable; Pro additionally relays through the account. Free
+ * never receives a cloud path.
+ */
 export function syncTransports(
   tier: Tier,
   localBridgeAvailable: boolean,
 ): SyncTransportKind[] {
   const transports: SyncTransportKind[] = [];
   if (localBridgeAvailable) transports.push("local-network");
-  if (tier === "basic" || tier === "pro") transports.push("cloud-relay");
+  if (tier === "pro") transports.push("cloud-relay");
   return transports;
 }
 

@@ -165,87 +165,123 @@ test('Free accounts cannot access the cloud relay', async () => {
   assert.deepEqual(JSON.parse(response.body), { error: 'cloud_relay_requires_paid_tier' });
 });
 
-test('Basic/Pro can upload, list, and download an Idea through the relay', async () => {
-  for (const tier of ['basic', 'pro']) {
-    const services = fakeServices();
-    const handler = createHandler(services);
-    const frame = offerFrame(`${tier}-idea`, Buffer.from('audio bytes'));
-    const offer = offerFromFrame(frame);
+test('the debug tier endpoint accepts Free and Pro but refuses the retired Basic', async () => {
+  const handler = createHandler(fakeServices());
 
-    const initiated = await handler(event('POST /relay/ideas', tier, {
-      body: JSON.stringify(offer),
+  for (const tier of ['free', 'pro']) {
+    const accepted = await handler(event('PUT /me/tier', 'free', {
+      body: JSON.stringify({ tier }),
     }));
-    assert.equal(initiated.statusCode, 200);
-    assert.equal(
-      JSON.parse(initiated.body).uploadUrl,
-      `https://upload.example/account-1/${tier}-idea`,
-    );
-
-    const uploaded = await handler(event('POST /relay/ideas/{id}/complete', tier, {
-      path: `/relay/ideas/${tier}-idea/complete`,
-      pathParameters: { id: `${tier}-idea` },
-      body: JSON.stringify(offer),
-    }));
-    assert.equal(uploaded.statusCode, 200);
-    assert.equal(JSON.parse(uploaded.body).accepted, true);
-
-    const manifest = await handler(event('GET /relay/manifest', tier));
-    assert.deepEqual(JSON.parse(manifest.body).have, [`${tier}-idea`]);
-
-    const downloaded = await handler(event('GET /relay/ideas/{id}', tier, {
-      path: `/relay/ideas/${tier}-idea`,
-      pathParameters: { id: `${tier}-idea` },
-    }));
-    assert.equal(downloaded.statusCode, 200);
-    const descriptor = JSON.parse(downloaded.body);
-    assert.deepEqual(descriptor.offer, offer);
-    assert.equal(
-      descriptor.downloadUrl,
-      `https://download.example/account-1/${tier}-idea`,
-    );
+    assert.equal(accepted.statusCode, 200);
+    assert.deepEqual(JSON.parse(accepted.body), { tier });
   }
+
+  const refused = await handler(event('PUT /me/tier', 'free', {
+    body: JSON.stringify({ tier: 'basic' }),
+  }));
+  assert.equal(refused.statusCode, 400);
+  assert.deepEqual(JSON.parse(refused.body), {
+    error: 'invalid_tier',
+    allowed: ['free', 'pro'],
+  });
+});
+
+test('an account still stored as Basic reads as Pro and keeps its cloud relay', async () => {
+  const handler = createHandler(fakeServices());
+
+  const profile = await handler(event('GET /me', 'basic'));
+  assert.equal(JSON.parse(profile.body).tier, 'pro');
+
+  const manifest = await handler(event('GET /relay/manifest', 'basic'));
+  assert.equal(manifest.statusCode, 200);
+});
+
+test('an unrecognised stored tier falls back to Free rather than paid access', async () => {
+  const handler = createHandler(fakeServices());
+
+  const profile = await handler(event('GET /me', 'platinum'));
+  assert.equal(JSON.parse(profile.body).tier, 'free');
+
+  const manifest = await handler(event('GET /relay/manifest', 'platinum'));
+  assert.equal(manifest.statusCode, 403);
+});
+
+test('Pro can upload, list, and download an Idea through the relay', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services);
+  const frame = offerFrame('pro-idea', Buffer.from('audio bytes'));
+  const offer = offerFromFrame(frame);
+
+  const initiated = await handler(event('POST /relay/ideas', 'pro', {
+    body: JSON.stringify(offer),
+  }));
+  assert.equal(initiated.statusCode, 200);
+  assert.equal(
+    JSON.parse(initiated.body).uploadUrl,
+    'https://upload.example/account-1/pro-idea',
+  );
+
+  const uploaded = await handler(event('POST /relay/ideas/{id}/complete', 'pro', {
+    path: '/relay/ideas/pro-idea/complete',
+    pathParameters: { id: 'pro-idea' },
+    body: JSON.stringify(offer),
+  }));
+  assert.equal(uploaded.statusCode, 200);
+  assert.equal(JSON.parse(uploaded.body).accepted, true);
+
+  const manifest = await handler(event('GET /relay/manifest', 'pro'));
+  assert.deepEqual(JSON.parse(manifest.body).have, ['pro-idea']);
+
+  const downloaded = await handler(event('GET /relay/ideas/{id}', 'pro', {
+    path: '/relay/ideas/pro-idea',
+    pathParameters: { id: 'pro-idea' },
+  }));
+  assert.equal(downloaded.statusCode, 200);
+  const descriptor = JSON.parse(downloaded.body);
+  assert.deepEqual(descriptor.offer, offer);
+  assert.equal(
+    descriptor.downloadUrl,
+    'https://download.example/account-1/pro-idea',
+  );
 });
 
 test('two Capture devices on one paid account contribute to one relay Library', async () => {
-  for (const tier of ['basic', 'pro']) {
-    const services = fakeServices();
-    const handler = createHandler(services);
+  const handler = createHandler(fakeServices());
 
-    for (const [deviceId, ideaId] of [['phone', 'phone-idea'], ['tablet', 'tablet-idea']]) {
-      const frame = offerFrame(ideaId, Buffer.from(`${deviceId} audio`), deviceId);
-      const offer = offerFromFrame(frame);
-      await uploadOffer(handler, tier, offer);
-    }
-
-    const manifest = await handler(event('GET /relay/manifest', tier));
-    assert.deepEqual(
-      new Set(JSON.parse(manifest.body).have),
-      new Set(['phone-idea', 'tablet-idea']),
-    );
+  for (const [deviceId, ideaId] of [['phone', 'phone-idea'], ['tablet', 'tablet-idea']]) {
+    const frame = offerFrame(ideaId, Buffer.from(`${deviceId} audio`), deviceId);
+    const offer = offerFromFrame(frame);
+    await uploadOffer(handler, 'pro', offer);
   }
+
+  const manifest = await handler(event('GET /relay/manifest', 'pro'));
+  assert.deepEqual(
+    new Set(JSON.parse(manifest.body).have),
+    new Set(['phone-idea', 'tablet-idea']),
+  );
 });
 
 test('purging an Idea removes its audio and its metadata from the relay', async () => {
   const services = fakeServices();
   const handler = createHandler(services);
   const offer = offerFromFrame(offerFrame('spent-idea', Buffer.from('audio')));
-  await uploadOffer(handler, 'basic', offer);
+  await uploadOffer(handler, 'pro', offer);
 
-  const purged = await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+  const purged = await handler(event('DELETE /relay/ideas/{id}', 'pro', {
     path: '/relay/ideas/spent-idea',
     pathParameters: { id: 'spent-idea' },
   }));
 
   assert.equal(purged.statusCode, 200);
   assert.deepEqual(JSON.parse(purged.body), { ideaId: 'spent-idea', deleted: true });
-  assert.deepEqual(JSON.parse((await handler(event('GET /relay/manifest', 'basic'))).body).have, []);
+  assert.deepEqual(JSON.parse((await handler(event('GET /relay/manifest', 'pro'))).body).have, []);
   assert.equal(services.audio.has('account-1/spent-idea'), false);
 });
 
 test('purging an Idea the relay never had reports success, so a retry is safe', async () => {
   const handler = createHandler(fakeServices());
 
-  const purged = await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+  const purged = await handler(event('DELETE /relay/ideas/{id}', 'pro', {
     path: '/relay/ideas/never-uploaded',
     pathParameters: { id: 'never-uploaded' },
   }));
@@ -258,15 +294,15 @@ test('one account cannot purge another account\'s Idea', async () => {
   const services = fakeServices();
   const handler = createHandler(services);
   const offer = offerFromFrame(offerFrame('private-idea', Buffer.from('audio')));
-  await uploadOffer(handler, 'basic', offer, { accountSub: 'account-a' });
+  await uploadOffer(handler, 'pro', offer, { accountSub: 'account-a' });
 
-  await handler(event('DELETE /relay/ideas/{id}', 'basic', {
+  await handler(event('DELETE /relay/ideas/{id}', 'pro', {
     accountSub: 'account-b',
     path: '/relay/ideas/private-idea',
     pathParameters: { id: 'private-idea' },
   }));
 
-  const owner = await handler(event('GET /relay/manifest', 'basic', {
+  const owner = await handler(event('GET /relay/manifest', 'pro', {
     accountSub: 'account-a',
   }));
   assert.deepEqual(JSON.parse(owner.body).have, ['private-idea']);
@@ -287,12 +323,12 @@ test('a delete never falls through to the download route', async () => {
   const services = fakeServices();
   const handler = createHandler(services);
   const offer = offerFromFrame(offerFrame('kept-idea', Buffer.from('audio')));
-  await uploadOffer(handler, 'basic', offer);
+  await uploadOffer(handler, 'pro', offer);
 
   // A payload without routeKey must still be routed by method, or a DELETE
   // would be answered by the GET branch and quietly leave the copy behind.
   const purged = await handler({
-    ...event('DELETE /relay/ideas/{id}', 'basic', {
+    ...event('DELETE /relay/ideas/{id}', 'pro', {
       path: '/relay/ideas/kept-idea',
       pathParameters: { id: 'kept-idea' },
     }),
@@ -309,9 +345,9 @@ test('a delete never falls through to the download route', async () => {
 
 test('an edit pushed to the relay reaches peers that pull the Library', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('edited-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('edited-idea')));
 
-  const ack = await handler(updateEvent('basic', relayIdea('edited-idea', {
+  const ack = await handler(updateEvent('pro', relayIdea('edited-idea', {
     tags: ['riff'],
     tempo: 120,
     fieldUpdatedAt: { tags: 1700000009000, tempo: 1700000009000 },
@@ -323,7 +359,7 @@ test('an edit pushed to the relay reaches peers that pull the Library', async ()
     ideaId: 'edited-idea',
     accepted: true,
   });
-  const [stored] = await relayLibrary(handler, 'basic');
+  const [stored] = await relayLibrary(handler, 'pro');
   assert.deepEqual(stored.tags, ['riff']);
   assert.equal(stored.tempo, 120);
   assert.equal(stored.fieldUpdatedAt.tags, 1700000009000);
@@ -331,14 +367,14 @@ test('an edit pushed to the relay reaches peers that pull the Library', async ()
 
 test('an edit also reaches a device that downloads the Idea for the first time', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('renamed-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('renamed-idea')));
 
-  await handler(updateEvent('basic', relayIdea('renamed-idea', {
+  await handler(updateEvent('pro', relayIdea('renamed-idea', {
     name: 'Chorus riff',
     fieldUpdatedAt: { name: 1700000009000 },
   })));
 
-  const downloaded = await handler(event('GET /relay/ideas/{id}', 'basic', {
+  const downloaded = await handler(event('GET /relay/ideas/{id}', 'pro', {
     path: '/relay/ideas/renamed-idea',
     pathParameters: { id: 'renamed-idea' },
   }));
@@ -351,21 +387,21 @@ test('an edit also reaches a device that downloads the Idea for the first time',
 
 test('the relay merges edits per field, so a stale field never clobbers a newer one', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('shared-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('shared-idea')));
 
   // Bridge renames while offline; Capture adds a tag afterwards but still holds
   // the old name. Each field takes whichever edit is newer (ADR 0006).
-  await handler(updateEvent('basic', relayIdea('shared-idea', {
+  await handler(updateEvent('pro', relayIdea('shared-idea', {
     name: 'Verse idea',
     fieldUpdatedAt: { name: 1700000002000 },
   })));
-  await handler(updateEvent('basic', relayIdea('shared-idea', {
+  await handler(updateEvent('pro', relayIdea('shared-idea', {
     name: 'Cloud Idea',
     tags: ['drums'],
     fieldUpdatedAt: { name: 1700000001000, tags: 1700000003000 },
   })));
 
-  const [stored] = await relayLibrary(handler, 'basic');
+  const [stored] = await relayLibrary(handler, 'pro');
   assert.equal(stored.name, 'Verse idea');
   assert.deepEqual(stored.tags, ['drums']);
 });
@@ -373,17 +409,17 @@ test('the relay merges edits per field, so a stale field never clobbers a newer 
 test('an Idea uploaded before the metadata schema still merges edits', async () => {
   const handler = createHandler(fakeServices());
   // The pre-metadata offer shape: no tags, no per-field stamps.
-  await uploadOffer(handler, 'basic', offerFromFrame(offerFrame('legacy-idea', Buffer.from('audio bytes'))));
+  await uploadOffer(handler, 'pro', offerFromFrame(offerFrame('legacy-idea', Buffer.from('audio bytes'))));
 
   // An edit older than the capture instant loses the name (it was set then),
   // but wins every field that has never been edited.
-  await handler(updateEvent('basic', relayIdea('legacy-idea', {
+  await handler(updateEvent('pro', relayIdea('legacy-idea', {
     name: 'Stale name',
     tags: ['loop'],
     fieldUpdatedAt: { name: 1699999999000, tags: 1699999999000 },
   })));
 
-  const [stored] = await relayLibrary(handler, 'basic');
+  const [stored] = await relayLibrary(handler, 'pro');
   assert.equal(stored.name, 'Cloud Idea');
   assert.deepEqual(stored.tags, ['loop']);
 });
@@ -391,29 +427,29 @@ test('an Idea uploaded before the metadata schema still merges edits', async () 
 test('an edit to an Idea the relay never received is refused, not invented', async () => {
   const handler = createHandler(fakeServices());
 
-  const ack = await handler(updateEvent('basic', relayIdea('never-uploaded', {
+  const ack = await handler(updateEvent('pro', relayIdea('never-uploaded', {
     tags: ['ghost'],
     fieldUpdatedAt: { tags: 1700000009000 },
   })));
 
   assert.equal(ack.statusCode, 200);
   assert.equal(JSON.parse(ack.body).accepted, false);
-  assert.deepEqual(await relayLibrary(handler, 'basic'), []);
+  assert.deepEqual(await relayLibrary(handler, 'pro'), []);
 });
 
 test('one account cannot edit another account\'s Idea', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('private-idea')), {
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('private-idea')), {
     accountSub: 'account-a',
   });
 
-  const ack = await handler(updateEvent('basic', relayIdea('private-idea', {
+  const ack = await handler(updateEvent('pro', relayIdea('private-idea', {
     name: 'Stolen',
     fieldUpdatedAt: { name: 1700000009000 },
   }), { accountSub: 'account-b' }));
 
   assert.equal(JSON.parse(ack.body).accepted, false);
-  const [owned] = await relayLibrary(handler, 'basic', { accountSub: 'account-a' });
+  const [owned] = await relayLibrary(handler, 'pro', { accountSub: 'account-a' });
   assert.equal(owned.name, 'Cloud Idea');
 });
 
@@ -429,9 +465,9 @@ test('Free accounts cannot read or write relay metadata', async () => {
 
 test('a malformed metadata update is rejected rather than stored', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('guarded-idea')));
 
-  const response = await handler(event('POST /relay/updates', 'basic', {
+  const response = await handler(event('POST /relay/updates', 'pro', {
     body: JSON.stringify({ kind: 'idea-metadata-update', from: {}, idea: { id: '../other' } }),
   }));
 
@@ -444,7 +480,7 @@ test('an edit missing an editable field can never leave an unreadable Idea behin
   // the metadata *and* the audio-download routes serve that same record — so a
   // push carrying a newer stamp but no value would wedge the whole account.
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('guarded-idea')));
 
   const malformed = [
     // `undefined` disappears in JSON, so this arrives as an Idea with no name.
@@ -455,11 +491,11 @@ test('an edit missing an editable field can never leave an unreadable Idea behin
     { location: { lat: 'north', lon: 0, label: '' }, fieldUpdatedAt: { location: 1700000009000 } },
   ];
   for (const overrides of malformed) {
-    const response = await handler(updateEvent('basic', relayIdea('guarded-idea', overrides)));
+    const response = await handler(updateEvent('pro', relayIdea('guarded-idea', overrides)));
     assert.equal(response.statusCode, 400, `expected a rejection for ${JSON.stringify(overrides)}`);
   }
 
-  const [stored] = await relayLibrary(handler, 'basic');
+  const [stored] = await relayLibrary(handler, 'pro');
   assert.equal(stored.name, 'Cloud Idea');
   assert.deepEqual(stored.tags, []);
   assert.equal(stored.tempo, null);
@@ -468,14 +504,14 @@ test('an edit missing an editable field can never leave an unreadable Idea behin
 
 test('an edit stamped with a nonsense clock never wins a field', async () => {
   const handler = createHandler(fakeServices());
-  await uploadOffer(handler, 'basic', offerFor(relayIdea('guarded-idea')));
+  await uploadOffer(handler, 'pro', offerFor(relayIdea('guarded-idea')));
 
-  await handler(updateEvent('basic', relayIdea('guarded-idea', {
+  await handler(updateEvent('pro', relayIdea('guarded-idea', {
     instrument: ['ghost'],
     fieldUpdatedAt: { instrument: 'soon' },
   })));
 
-  const [stored] = await relayLibrary(handler, 'basic');
+  const [stored] = await relayLibrary(handler, 'pro');
   assert.deepEqual(stored.instrument, []);
 });
 
@@ -484,9 +520,9 @@ test('paid relay Libraries remain isolated by account', async () => {
   const handler = createHandler(services);
   const frame = offerFrame('private-idea', Buffer.from('audio'), 'phone');
   const offer = offerFromFrame(frame);
-  await uploadOffer(handler, 'basic', offer, { accountSub: 'account-a' });
+  await uploadOffer(handler, 'pro', offer, { accountSub: 'account-a' });
 
-  const otherAccountManifest = await handler(event('GET /relay/manifest', 'basic', {
+  const otherAccountManifest = await handler(event('GET /relay/manifest', 'pro', {
     accountSub: 'account-b',
   }));
   assert.deepEqual(JSON.parse(otherAccountManifest.body).have, []);

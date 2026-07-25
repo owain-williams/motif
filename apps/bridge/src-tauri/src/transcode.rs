@@ -1,9 +1,8 @@
 //! Runtime codec adapter for DAW handoff.
 //!
-//! Bridge stores Free/Basic Ideas as AAC in an M4A container. This module
-//! decodes one received file and atomically stages a 16-bit PCM WAV. Format
-//! selection stays in `bridge-core`; only codec and filesystem mechanics live
-//! here.
+//! Bridge stores Free Ideas as AAC in an M4A container. This module decodes
+//! one received file and atomically stages a 16-bit PCM WAV. Format selection
+//! stays in `bridge-core`; only codec and filesystem mechanics live here.
 
 use std::fs::{self, File};
 use std::path::Path;

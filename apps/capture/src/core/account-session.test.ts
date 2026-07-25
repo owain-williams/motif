@@ -29,7 +29,7 @@ describe("Capture account session", () => {
   it("returns to anonymous Free-tier behavior after logout", () => {
     const account = authenticatedAccount({
       email: "musician@example.com",
-      tier: "basic",
+      tier: "pro",
     });
 
     expect(signOutAccount(account)).toBe(ANONYMOUS_ACCOUNT);

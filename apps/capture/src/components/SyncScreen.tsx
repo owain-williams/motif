@@ -259,9 +259,8 @@ export function SyncScreen({
 
         <Text style={styles.footnote}>
           Motif sends Ideas to Bridge over your local network whenever both apps
-          are awake. Basic and Pro accounts also relay through your account, so
-          an Idea captured away from home is waiting on the desktop when you get
-          back.
+          are awake. Pro accounts also relay through your account, so an Idea
+          captured away from home is waiting on the desktop when you get back.
         </Text>
       </ScrollView>
     </View>

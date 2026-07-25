@@ -3,7 +3,7 @@ import type { AudioFormat, RecordingProfile } from "@motif/shared";
 
 /**
  * Converts the tier-approved profile into a cross-platform PCM recording.
- * Free/Basic additionally produce AAC; Pro retains the uncompressed WAV.
+ * Free additionally produces AAC; Pro retains the uncompressed WAV.
  */
 export function recordingConfig(profile: RecordingProfile): RecordingConfig {
   return {

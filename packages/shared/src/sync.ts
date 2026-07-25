@@ -88,8 +88,8 @@ export interface IdeaSyncAck {
  * receiver doesn't have is ignored (its audio never arrived).
  *
  * The same message travels both transports: to a paired peer over the LAN, and
- * through the account relay for Basic/Pro, where the backend merges it by the
- * same rule so devices that never share a network still converge (motif-kka.9).
+ * through the account relay for Pro, where the backend merges it by the same
+ * rule so devices that never share a network still converge (motif-kka.9).
  */
 export interface IdeaMetadataUpdate {
   readonly kind: "idea-metadata-update";

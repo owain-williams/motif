@@ -16,7 +16,19 @@ const {
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-const TIERS = new Set(['free', 'basic', 'pro']);
+const TIERS = new Set(['free', 'pro']);
+
+/**
+ * The tier to act on for a stored profile. Accounts sold the retired Basic
+ * tier are read as Pro rather than migrated (ADR 0008), so none of them
+ * silently loses the cloud relay it was already paying for — the branch stays
+ * until no row stores `basic`. Anything else unrecognised reads as Free, so a
+ * malformed row can never hand out paid access.
+ */
+function effectiveTier(storedTier) {
+  if (storedTier === 'basic') return 'pro';
+  return TIERS.has(storedTier) ? storedTier : 'free';
+}
 
 function createHandler(services) {
   return async (event) => {
@@ -43,7 +55,7 @@ function createHandler(services) {
       return json(200, {
         sub: claims.sub,
         email: claims.email,
-        tier: profile.tier ?? 'free',
+        tier: effectiveTier(profile.tier),
       });
     }
 
@@ -58,7 +70,7 @@ function createHandler(services) {
 
     if (rawPath.startsWith('/relay/')) {
       const profile = await services.accounts.profile(claims.sub, event);
-      if (profile.tier !== 'basic' && profile.tier !== 'pro') {
+      if (effectiveTier(profile.tier) !== 'pro') {
         return json(403, { error: 'cloud_relay_requires_paid_tier' });
       }
     }

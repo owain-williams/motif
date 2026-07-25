@@ -1,4 +1,4 @@
-//! Account-scoped cloud relay import for Basic/Pro Bridge sessions.
+//! Account-scoped cloud relay import for Pro Bridge sessions.
 //!
 //! The import decision is transport-independent and tested with an in-memory
 //! [`CloudRelaySource`]. [`HttpCloudRelay`] is the production HTTPS adapter.

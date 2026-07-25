@@ -478,12 +478,12 @@ async function loginForCloud(email: string, password: string): Promise<void> {
       headers: { Authorization: `Bearer ${idToken}` },
     });
     const profile = (await profileResponse.json()) as { tier?: string };
-    if (!profileResponse.ok || (profile.tier !== "basic" && profile.tier !== "pro")) {
-      throw new Error("Cloud relay requires a Basic or Pro account.");
+    if (!profileResponse.ok || profile.tier !== "pro") {
+      throw new Error("Cloud relay requires a Pro account.");
     }
 
     await invoke("enable_cloud_sync", { idToken });
-    status.textContent = `${profile.tier === "pro" ? "Pro" : "Basic"} cloud relay connected`;
+    status.textContent = "Pro cloud relay connected";
     form.hidden = true;
     logout.hidden = false;
   } catch (error) {
@@ -566,7 +566,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const status = document.querySelector<HTMLParagraphElement>("#cloud-status");
     if (form) form.hidden = false;
     if (logout) logout.hidden = true;
-    if (status) status.textContent = "Log in to sync Basic/Pro Ideas from anywhere.";
+    if (status) status.textContent = "Log in to sync Pro Ideas from anywhere.";
   });
   void loadPairingInfo();
   void refreshLibrary();

@@ -9,7 +9,7 @@
  *                                in automation)
  *   5. InitiateAuth           -> USER_PASSWORD_AUTH login, returns JWTs
  *   6. GET /me with IdToken   -> expect the default Free tier
- *   7. PUT /me/tier           -> set and read back the debug Basic tier
+ *   7. PUT /me/tier           -> set and read back the debug Pro tier
  *   8. AdminDeleteUser        -> clean up the throwaway test user
  *
  * Uses the ambient AWS credentials/region. Run: pnpm --filter @motif/infra smoke
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
         authorization: `Bearer ${idToken}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ tier: 'basic' }),
+      body: JSON.stringify({ tier: 'pro' }),
     });
     assert(tierUpdate.status === 200, `/me/tier expected 200, got ${tierUpdate.status}`);
     const updatedMe = await fetch(`${apiUrl}/me`, {
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     });
     const updatedBody = (await updatedMe.json()) as { tier?: string };
     console.log(`PUT tier    -> ${tierUpdate.status}; GET /me -> ${updatedBody.tier}`);
-    assert(updatedBody.tier === 'basic', `tier update was not persisted: ${updatedBody.tier}`);
+    assert(updatedBody.tier === 'pro', `tier update was not persisted: ${updatedBody.tier}`);
 
     // 8. relay an Idea through real API + presigned S3 URLs.
     const audio = new TextEncoder().encode('smoke audio');
