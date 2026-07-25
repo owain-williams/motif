@@ -1155,6 +1155,7 @@ export default function App() {
               ? `${account.email} · ${account.tier}`
               : "Free · not signed in"
           }
+          tier={tier}
           recordingFormat={recordingFormat}
           formatChoices={formatChoices}
           audioFormat={profile.audioFormat}

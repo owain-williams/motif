@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { formatDuration } from "@motif/shared";
-import type { AudioFormat, RecordingChannelCount } from "@motif/shared";
+import type { AudioFormat, RecordingChannelCount, Tier } from "@motif/shared";
 import type { SyncSummary } from "../core/sync-summary";
 import { formatCapturedAt } from "../core/capture-time";
 import { colors, fonts, radii, SCREEN_TOP_INSET } from "../theme";
@@ -38,6 +38,7 @@ export function SyncScreen({
   canSync,
   now,
   accountLabel,
+  tier,
   recordingFormat,
   formatChoices,
   audioFormat,
@@ -65,6 +66,7 @@ export function SyncScreen({
   canSync: boolean;
   now: number;
   accountLabel: string;
+  tier: Tier;
   recordingFormat: string;
   formatChoices: readonly AudioFormat[];
   audioFormat: AudioFormat;
@@ -222,6 +224,18 @@ export function SyncScreen({
               ) : null}
             </View>
           </View>
+
+          {tier === "free" ? (
+            <View style={styles.setting}>
+              <View style={styles.settingText}>
+                <Text style={styles.settingLabel}>Motif Pro</Text>
+                <Text style={styles.settingValue}>
+                  Stereo and WAV recording, plus cloud sync away from home.
+                  Upgrades aren&apos;t available yet.
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           <View style={styles.setting}>
             <View style={styles.settingText}>
