@@ -89,10 +89,13 @@ persistence, device-local waveform sidecars, and playback wiring are in
 `src/idea-storage` and `App.tsx`.
 
 Capture can be used without an account at the Free tier. Its Account dialog also
-supports Cognito email sign-up/confirmation and login; logged-in sessions expose
-the account's Free/Pro tier. Verified RevenueCat lifecycle events own paid Tier
-changes. Pro Ideas are copied to the authenticated cloud
-relay as well as using the existing local-network path when available. Signing
+supports Cognito email sign-up/confirmation and login; logged-in sessions display
+the account's Free/Pro Tier without offering any way to change it — verified
+RevenueCat lifecycle events are the only thing that assigns a Tier, and
+development accounts get one through
+[`pnpm --filter @motif/infra tier`](infra/README.md). Pro Ideas are copied to the
+authenticated cloud relay as well as using the existing local-network path when
+available. Signing
 Capture into a paid account pairs that Capture through the account, so multiple
 phones/tablets signed into the same account contribute to one relay
 Library; Free never calls the relay and retains its single direct Capture ↔

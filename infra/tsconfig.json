@@ -3,6 +3,9 @@
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "Node",
+    // The Lambda is deployed unbundled and is therefore plain JavaScript; this
+    // lets the fixture-Tier tests drive fixtures through that real handler.
+    "allowJs": true,
     "target": "ES2022",
     "lib": ["ES2022"],
     "types": ["node"],

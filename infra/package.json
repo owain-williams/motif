@@ -9,8 +9,9 @@
     "deploy": "cdk deploy --require-approval never",
     "destroy": "cdk destroy --force",
     "typecheck": "tsc --noEmit",
-    "test": "node --test lambda/*.test.js",
-    "smoke": "ts-node scripts/smoke-auth.ts"
+    "test": "node --require ts-node/register --test lambda/*.test.js scripts/*.test.ts",
+    "smoke": "ts-node scripts/smoke-auth.ts",
+    "tier": "ts-node scripts/set-account-tier.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.600.0",

@@ -9,22 +9,18 @@
  *                                in automation)
  *   5. InitiateAuth           -> USER_PASSWORD_AUTH login, returns JWTs
  *   6. GET /me with IdToken   -> expect the default Free tier
- *   7. RevenueCat webhook     -> project and read back the Pro tier
- *   8. cloud relay            -> upload and download an Idea
- *   9. AdminDeleteUser        -> clean up the throwaway test user
+ *   7. PUT /me/tier           -> expect a refusal, and an account still Free:
+ *                                no user session can assign itself Pro
+ *   8. fixture Pro Tier       -> billing owns Tier, so this projects one through
+ *                                the credential-verified RevenueCat webhook and
+ *                                reads it back
+ *   9. cloud relay            -> upload and download an Idea
+ *  10. AdminDeleteUser        -> clean up the throwaway test user
  *
  * Uses the ambient AWS credentials/region. Run: pnpm --filter @motif/infra smoke
  */
-import {
-  CloudFormationClient,
-  DescribeStacksCommand,
-} from '@aws-sdk/client-cloudformation';
 import { DeleteItemCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import {
-  GetSecretValueCommand,
-  SecretsManagerClient,
-} from '@aws-sdk/client-secrets-manager';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -32,28 +28,15 @@ import {
   AdminDeleteUserCommand,
   InitiateAuthCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
-
-const STACK_NAME = 'MotifBackendStack';
-const REGION = process.env.AWS_REGION ?? process.env.CDK_DEFAULT_REGION ?? 'eu-west-2';
-
-async function outputs(): Promise<Record<string, string>> {
-  const cfn = new CloudFormationClient({ region: REGION });
-  const res = await cfn.send(new DescribeStacksCommand({ StackName: STACK_NAME }));
-  const stack = res.Stacks?.[0];
-  if (!stack) throw new Error(`Stack ${STACK_NAME} not found in ${REGION}`);
-  const map: Record<string, string> = {};
-  for (const o of stack.Outputs ?? []) {
-    if (o.OutputKey && o.OutputValue) map[o.OutputKey] = o.OutputValue;
-  }
-  return map;
-}
+import { REGION, operatorCredential, stackOutputs } from './deployed-stack';
+import { postFixtureTier } from './fixture-tier';
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`ASSERT FAILED: ${msg}`);
 }
 
 async function main(): Promise<void> {
-  const out = await outputs();
+  const out = await stackOutputs(REGION);
   const apiUrl = out.ApiUrl;
   const userPoolId = out.UserPoolId;
   const clientId = out.UserPoolClientId;
@@ -67,7 +50,6 @@ async function main(): Promise<void> {
   const idp = new CognitoIdentityProviderClient({ region: REGION });
   const dynamo = new DynamoDBClient({ region: REGION });
   const s3 = new S3Client({ region: REGION });
-  const secrets = new SecretsManagerClient({ region: REGION });
   const email = `smoke+${Date.now()}@motif.test`;
   const password = `Sm0ke!${Math.random().toString(36).slice(2, 10)}A`;
   const ideaId = `smoke-${Date.now()}`;
@@ -126,36 +108,44 @@ async function main(): Promise<void> {
     assert(body.tier === 'free', `/me defaulted to wrong tier: ${body.tier}`);
     assert(body.cloudStorageBytesUsed === 0, `/me returned unexpected storage usage: ${body.cloudStorageBytesUsed}`);
 
-    // 7. a credential-authenticated RevenueCat event owns paid Tier changes.
-    const credential = await secrets.send(new GetSecretValueCommand({
-      SecretId: revenueCatSecretName,
-    })).then((result) => result.SecretString);
-    assert(credential, 'RevenueCat webhook credential was empty');
-    const webhook = await fetch(`${apiUrl}/webhooks/revenuecat`, {
-      method: 'POST',
-      headers: {
-        authorization: credential,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        event: {
-          id: `smoke-purchase-${Date.now()}`,
-          type: 'INITIAL_PURCHASE',
-          event_timestamp_ms: Date.now(),
-          app_user_id: accountSub,
-          entitlement_ids: ['pro'],
-        },
-      }),
+    // 7. The temporary self-service tier control is gone (motif-p73). Proving
+    // that against the real gateway matters more than against the handler: a
+    // route left behind in the stack would answer here and nowhere else.
+    const selfService = await fetch(`${apiUrl}/me/tier`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${idToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ tier: 'pro' }),
     });
-    assert(webhook.status === 200, `RevenueCat webhook expected 200, got ${webhook.status}`);
+    const afterSelfService = (await fetch(`${apiUrl}/me`, {
+      headers: { authorization: `Bearer ${idToken}` },
+    }).then((response) => response.json())) as { tier?: string };
+    console.log(`PUT /me/tier -> ${selfService.status}; GET /me -> ${afterSelfService.tier}`);
+    assert(!selfService.ok, `self-service tier assignment was accepted: ${selfService.status}`);
+    assert(
+      afterSelfService.tier === 'free',
+      `a user session assigned itself ${afterSelfService.tier}`,
+    );
+
+    // 8. Only verified billing changes a Tier, so the relay steps below need a
+    // fixture projected through that same webhook — the operator credential is
+    // what authorizes it, never the account's own session.
+    assert(accountSub, '/me returned no account sub to project a Tier onto');
+    const credential = await operatorCredential(REGION, revenueCatSecretName);
+    const projected = await postFixtureTier({
+      apiUrl,
+      credential,
+      appUserId: accountSub,
+      tier: 'pro',
+    });
+    assert(projected.tier === 'pro', `fixture Tier projected as ${projected.tier}`);
     const updatedMe = await fetch(`${apiUrl}/me`, {
       headers: { authorization: `Bearer ${idToken}` },
     });
     const updatedBody = (await updatedMe.json()) as { tier?: string };
-    console.log(`Webhook     -> ${webhook.status}; GET /me -> ${updatedBody.tier}`);
+    console.log(`Fixture Pro -> GET /me -> ${updatedBody.tier}`);
     assert(updatedBody.tier === 'pro', `tier update was not persisted: ${updatedBody.tier}`);
 
-    // 8. relay an Idea through real API + presigned S3 URLs.
+    // 9. relay an Idea through real API + presigned S3 URLs.
     const audio = new TextEncoder().encode('smoke audio');
     const offer = {
       kind: 'idea-sync-offer',
@@ -203,7 +193,7 @@ async function main(): Promise<void> {
     assert(new TextDecoder().decode(downloaded) === 'smoke audio', 'relay audio did not round-trip');
     console.log('Cloud relay -> upload + manifest + download ok');
   } finally {
-    // 9. cleanup
+    // 10. cleanup
     if (accountSub) {
       await Promise.all([
         dynamo.send(new DeleteItemCommand({

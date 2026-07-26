@@ -375,12 +375,23 @@ test('completion rechecks quota when concurrent offers were initially allowed', 
 
 test('authenticated clients cannot assign their own Tier', async () => {
   const handler = createHandler(fakeServices());
+  const assignPro = JSON.stringify({ tier: 'pro' });
 
-  const response = await handler(event('PUT /me/tier', 'free', {
-    body: JSON.stringify({ tier: 'pro' }),
-  }));
+  // Both shapes the retired control could arrive as: the route key it was
+  // registered under, and the raw path alone, in case a stale gateway route
+  // outlives the deploy that removed it and forwards without one.
+  const keyed = await handler(event('PUT /me/tier', 'free', { body: assignPro }));
+  const bare = await handler({
+    ...event('', 'free', { path: '/me/tier', body: assignPro }),
+    requestContext: {
+      authorizer: { jwt: { claims: { sub: 'account-1', email: 'a@example.com' } } },
+      http: { method: 'PUT', path: '/me/tier' },
+    },
+  });
 
-  assert.equal(response.statusCode, 404);
+  assert.equal(keyed.statusCode, 404);
+  assert.equal(bare.statusCode, 404);
+  assert.equal((await handler(event('GET /relay/manifest', 'free'))).statusCode, 403);
 });
 
 test('an account still stored as Basic reads as Pro and keeps its cloud relay', async () => {

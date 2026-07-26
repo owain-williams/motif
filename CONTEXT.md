@@ -37,7 +37,7 @@ An Idea whose audio has been removed from the device to free up space, leaving t
 _Avoid_: Archived, cloud-only
 
 **Tier**:
-The subscription level of an account — Free or Pro — that determines sync transport, cloud storage quota, recording channel count, and which audio formats are available to record in. Pro requires a user account; Free does not.
+The subscription level of an account — Free or Pro — that determines sync transport, cloud storage quota, recording channel count, and which audio formats are available to record in. Pro requires a user account; Free does not. Verified billing assigns a Tier and nothing else does: Capture and Bridge read the Tier the account already holds, and never ask for one.
 _Avoid_: Plan, subscription level
 
 ### Tiers
