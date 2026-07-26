@@ -9,7 +9,17 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_MOTIF_REVENUECAT_TEST_KEY": "test_yVIfltjNMGtmHLMUoCWqLkmfNqc",
+        "EXPO_PUBLIC_MOTIF_REVENUECAT_ALLOW_TEST_STORE": "true",
+        "FORCE_BUNDLING": "1",
+        "SKIP_BUNDLING_METRO_IP": "1"
+      },
+      "ios": {
+        "buildConfiguration": "Debug"
+      }
     },
     "production": {
       "autoIncrement": true

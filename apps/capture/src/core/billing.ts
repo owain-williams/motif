@@ -246,6 +246,8 @@ export type BillingPresentation =
       readonly canManage: boolean;
     };
 
+export type BillingPlatform = "ios" | "android" | "web";
+
 export interface BillingInputs {
   readonly account: AccountSession;
   readonly store: EntitlementSnapshot;
@@ -253,12 +255,13 @@ export interface BillingInputs {
   readonly offer: ProOffer | null;
   /** False on the web build, or when the SDK could not be configured. */
   readonly storeAvailable: boolean;
+  readonly storePlatform: BillingPlatform;
 }
 
 export function billingPresentation(
   inputs: BillingInputs,
 ): BillingPresentation {
-  const { account, store, offer, storeAvailable } = inputs;
+  const { account, store, offer, storeAvailable, storePlatform } = inputs;
   const pending = cloudSyncPending(account, store);
 
   if (unlockedTier(account, store) === "pro") {
@@ -277,7 +280,10 @@ export function billingPresentation(
   if (!storeAvailable) {
     return {
       kind: "unavailable",
-      message: `${PRO_DISPLAY_NAME} can't be bought on this device. Subscribe in Capture on iOS or Android.`,
+      message:
+        storePlatform === "web"
+          ? `Subscribe to ${PRO_DISPLAY_NAME} in Capture on iOS or Android.`
+          : "Purchases are temporarily unavailable. Please try again later.",
     };
   }
 
@@ -329,6 +335,53 @@ export function subscriptionSummary(
   return store.willRenew
     ? `${PRO_DISPLAY_NAME} renews on ${date}${sandbox}.`
     : `${PRO_DISPLAY_NAME} is cancelled and ends on ${date}${sandbox}.`;
+}
+
+/**
+ * Selects the public SDK key without relying on RevenueCat's historical key
+ * prefixes. Current RevenueCat docs guarantee only that secret keys start
+ * `sk_` and OAuth tokens start `atk_`; app-specific SDK key formats are not an
+ * API contract. Test Store keys remain identifiable and require an explicit
+ * build-profile opt-in, so production cannot accidentally ship simulated purchases.
+ */
+export function selectBillingApiKey(inputs: {
+  readonly platformVariable: string;
+  readonly platformKey: string;
+  readonly testStoreKey: string;
+  readonly allowTestStore: boolean;
+}): { readonly key: string; readonly testStore: boolean } | { readonly problem: string } {
+  const key = inputs.platformKey || inputs.testStoreKey;
+  if (!key) {
+    return {
+      problem: `${inputs.platformVariable} is not set, and no Test Store key is configured.`,
+    };
+  }
+
+  if (key.startsWith("sk_") || key.startsWith("atk_")) {
+    return {
+      problem:
+        `${inputs.platformVariable} must contain the app's public SDK API key, ` +
+        "not a secret API key or OAuth token.",
+    };
+  }
+
+  const testStore = key.startsWith("test_");
+  if (inputs.platformKey === "" && !testStore) {
+    return {
+      problem:
+        "EXPO_PUBLIC_MOTIF_REVENUECAT_TEST_KEY must contain a RevenueCat Test Store key.",
+    };
+  }
+
+  if (testStore && !inputs.allowTestStore) {
+    return {
+      problem:
+        "Refusing to configure billing: this build has not explicitly enabled " +
+        "RevenueCat Test Store. Provide the platform app's public SDK API key.",
+    };
+  }
+
+  return { key, testStore };
 }
 
 function formatDate(millis: number): string {

@@ -36,6 +36,7 @@ import {
   PRO_DISPLAY_NAME,
   PRO_ENTITLEMENT_ID,
   purchaseFailureMessage,
+  selectBillingApiKey,
   type EntitlementSnapshot,
   type OfferPeriod,
   type ProOffer,
@@ -56,6 +57,8 @@ const TEST_STORE_API_KEY =
   "test_yVIfltjNMGtmHLMUoCWqLkmfNqc";
 const IOS_API_KEY = process.env.EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY ?? "";
 const ANDROID_API_KEY = process.env.EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY ?? "";
+const TEST_STORE_ALLOWED =
+  process.env.EXPO_PUBLIC_MOTIF_REVENUECAT_ALLOW_TEST_STORE === "true";
 
 /** Billing needs a store; Capture's web build has none. */
 const STORE_PLATFORM = Platform.OS === "ios" || Platform.OS === "android";
@@ -67,43 +70,20 @@ let configured = false;
  * shipping never silently depends on the Test Store — RevenueCat is explicit
  * that a Test Store key must never reach the App Store or Play.
  *
- * Prefix checking turns the most common setup mistake — pasting a secret key, a
- * project id, or another vendor's key — into a clear message rather than an
- * opaque SDK failure at the first purchase.
+ * RevenueCat's current documentation calls these public SDK API keys but does
+ * not promise platform-specific prefixes. Selection and credential safety live
+ * in the testable core rather than guessing from an undocumented format here.
  */
 function resolveApiKey(): { key: string; testStore: boolean } | { problem: string } {
-  const storeKey = Platform.OS === "ios" ? IOS_API_KEY : ANDROID_API_KEY;
-  const variable =
-    Platform.OS === "ios"
+  const ios = Platform.OS === "ios";
+  return selectBillingApiKey({
+    platformVariable: ios
       ? "EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY"
-      : "EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY";
-
-  if (storeKey) {
-    const expectedPrefix = Platform.OS === "ios" ? "appl_" : "goog_";
-    if (!storeKey.startsWith(expectedPrefix)) {
-      return {
-        problem:
-          `${variable} does not look like a RevenueCat ${Platform.OS} SDK key ` +
-          `(expected it to start with "${expectedPrefix}"). Copy the public SDK ` +
-          `key from RevenueCat → Project settings → API keys.`,
-      };
-    }
-    return { key: storeKey, testStore: false };
-  }
-
-  if (!TEST_STORE_API_KEY) {
-    return { problem: `${variable} is not set, and no Test Store key is configured.` };
-  }
-
-  if (!TEST_STORE_API_KEY.startsWith("test_")) {
-    return {
-      problem:
-        `EXPO_PUBLIC_MOTIF_REVENUECAT_TEST_KEY does not look like a RevenueCat ` +
-        `Test Store key (expected it to start with "test_").`,
-    };
-  }
-
-  return { key: TEST_STORE_API_KEY, testStore: true };
+      : "EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY",
+    platformKey: ios ? IOS_API_KEY : ANDROID_API_KEY,
+    testStoreKey: TEST_STORE_API_KEY,
+    allowTestStore: __DEV__ || TEST_STORE_ALLOWED,
+  });
 }
 
 /**
@@ -123,17 +103,6 @@ export function configureBilling(): { problem: string } | null {
 
   const resolved = resolveApiKey();
   if ("problem" in resolved) return resolved;
-
-  if (resolved.testStore && !__DEV__) {
-    // A release build reaching this means the store keys were never supplied.
-    // RevenueCat rejects Test Store keys in shipped apps, and the purchases it
-    // simulates take no money, so fail loudly rather than sell nothing.
-    return {
-      problem:
-        "Refusing to configure billing: this is a release build but only a " +
-        "RevenueCat Test Store key is set. Provide the appl_/goog_ store keys.",
-    };
-  }
 
   if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
 

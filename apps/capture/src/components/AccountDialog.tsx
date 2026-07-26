@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -100,6 +101,12 @@ export function AccountDialog({
     store: entitlement,
     offer,
     storeAvailable,
+    storePlatform:
+      Platform.OS === "ios"
+        ? "ios"
+        : Platform.OS === "android"
+          ? "android"
+          : "web",
   });
 
   return (

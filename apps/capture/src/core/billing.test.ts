@@ -13,6 +13,7 @@ import {
   cloudSyncPending,
   offerPriceLine,
   purchaseFailureMessage,
+  selectBillingApiKey,
   subscriptionSummary,
   unlockedTier,
   upgradeActionLabel,
@@ -49,6 +50,7 @@ function inputs(overrides: Partial<Parameters<typeof billingPresentation>[0]> = 
     store: NO_ENTITLEMENT,
     offer: YEARLY,
     storeAvailable: true,
+    storePlatform: "ios" as const,
     ...overrides,
   };
 }
@@ -215,14 +217,26 @@ describe("what the account dialog offers", () => {
     });
   });
 
-  it("says so plainly when this build cannot buy anything", () => {
-    // The web build has no store, and a misconfigured key disables billing.
-    // Offering a button that can only fail is worse than explaining why.
+  it("does not tell a native user to subscribe on the device they are using", () => {
     const presentation = billingPresentation(
       inputs({ storeAvailable: false, offer: null }),
     );
 
-    expect(presentation.kind).toBe("unavailable");
+    expect(presentation).toEqual({
+      kind: "unavailable",
+      message: "Purchases are temporarily unavailable. Please try again later.",
+    });
+  });
+
+  it("directs only web users to Capture on a store platform", () => {
+    const presentation = billingPresentation(
+      inputs({ storeAvailable: false, offer: null, storePlatform: "web" }),
+    );
+
+    expect(presentation).toEqual({
+      kind: "unavailable",
+      message: "Subscribe to Motif Pro in Capture on iOS or Android.",
+    });
   });
 
   it("still reports an existing Pro tier on a build that cannot buy", () => {
@@ -231,6 +245,40 @@ describe("what the account dialog offers", () => {
     expect(
       billingPresentation(inputs({ account, storeAvailable: false, offer: null })),
     ).toMatchObject({ kind: "active", canManage: false });
+  });
+});
+
+describe("RevenueCat SDK key selection", () => {
+  const base = {
+    platformVariable: "EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY",
+    platformKey: "",
+    testStoreKey: "test_public",
+    allowTestStore: true,
+  };
+
+  it("accepts current public SDK keys without assuming a platform prefix", () => {
+    expect(
+      selectBillingApiKey({ ...base, platformKey: "public_sdk_key_2026" }),
+    ).toEqual({ key: "public_sdk_key_2026", testStore: false });
+  });
+
+  it("rejects keys RevenueCat documents as secret or OAuth credentials", () => {
+    expect(
+      selectBillingApiKey({ ...base, platformKey: "sk_secret" }),
+    ).toHaveProperty("problem");
+    expect(
+      selectBillingApiKey({ ...base, platformKey: "atk_oauth" }),
+    ).toHaveProperty("problem");
+  });
+
+  it("uses Test Store only when the build profile explicitly allows it", () => {
+    expect(selectBillingApiKey(base)).toEqual({
+      key: "test_public",
+      testStore: true,
+    });
+    expect(
+      selectBillingApiKey({ ...base, allowTestStore: false }),
+    ).toHaveProperty("problem");
   });
 });
 

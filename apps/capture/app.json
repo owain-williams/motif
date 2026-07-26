@@ -37,6 +37,7 @@
       "bundler": "metro"
     },
     "plugins": [
+      "./plugins/with-standalone-debug-bundle",
       "expo-audio",
       "expo-sharing",
       "@siteed/audio-studio",

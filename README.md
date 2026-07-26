@@ -163,8 +163,9 @@ Webhook configuration (URL and Authorization credential) is in
 
 ### API keys
 
-All of these are **public** SDK keys, found under RevenueCat → Project settings →
-API keys. The secret key is never used by the app.
+All of these are **public SDK API keys**, found under RevenueCat → **API keys →
+SDK API keys** (or **Apps → select the app**). The secret `sk_` keys and OAuth
+`atk_` tokens are never used by the app.
 
 Development defaults to the **Test Store** key, which is already set in
 `src/billing.ts`. It needs no App Store Connect or Play Console setup and
@@ -175,22 +176,27 @@ appear in the dashboard. One Test Store key serves both platforms:
 EXPO_PUBLIC_MOTIF_REVENUECAT_TEST_KEY=test_xxxxxxxxxxxxxxxxxxxx   # optional override
 ```
 
-For anything you intend to ship, set the per-store keys as EAS environment
-variables. Either one takes precedence over the Test Store key on its platform:
+The EAS `preview` profile explicitly selects and allows the Test Store key. On
+iOS it uses Debug because RevenueCat intentionally terminates Release apps that
+contain a Test Store key. `FORCE_BUNDLING=1` activates the local config plugin,
+which embeds the JavaScript bundle anyway, so this internal build remains
+standalone and does not require Metro. For anything you intend to ship, set each app's public SDK API
+key as an EAS `production` environment variable. Either one takes precedence
+over the Test Store key on its platform:
 
 ```bash
-EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY=appl_xxxxxxxxxxxxxxxxxxxx
-EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY=goog_xxxxxxxxxxxxxxxxxxxx
+EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY=<Apple app public SDK API key>
+EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY=<Google app public SDK API key>
 ```
 
-RevenueCat forbids submitting an app configured with a Test Store key, so
-`configureBilling()` refuses to configure a release build that has no store key
-rather than shipping an app whose purchases take no money. It also checks key
-prefixes, so a mispasted key produces a clear message instead of an opaque failure
-at the paywall. Billing is unavailable on the web build; Capture stays fully
-usable at Free there.
-
-On iOS the Test Store only works under the **Debug** build configuration.
+RevenueCat does not document public platform-key prefixes as a stable contract,
+so Capture accepts the app-specific SDK key format the dashboard provides while
+rejecting documented secret (`sk_`) and OAuth (`atk_`) credentials. RevenueCat
+forbids submitting an app configured with a Test Store key, so Test Store also
+requires the preview-only `EXPO_PUBLIC_MOTIF_REVENUECAT_ALLOW_TEST_STORE=true`;
+a production build with no platform key refuses to configure billing rather than
+shipping simulated purchases. Billing is unavailable on the web build; Capture
+stays fully usable at Free there.
 
 ### After installing
 
