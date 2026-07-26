@@ -89,11 +89,13 @@ persistence, device-local waveform sidecars, and playback wiring are in
 `src/idea-storage` and `App.tsx`.
 
 Capture can be used without an account at the Free tier. Its Account dialog also
-supports Cognito email sign-up/confirmation and login; logged-in sessions display
-the account's Free/Pro Tier without offering any way to change it — verified
-RevenueCat lifecycle events are the only thing that assigns a Tier, and
-development accounts get one through
-[`pnpm --filter @motif/infra tier`](infra/README.md). Pro Ideas are copied to the
+supports Cognito email sign-up/confirmation and login, and offers the RevenueCat
+paywall that sells Pro (see [Subscriptions](#subscriptions-revenuecat)). A
+completed purchase unlocks Pro immediately from the store entitlement. Cloud relay
+is the exception: the backend checks its own account Tier on those routes, and
+that Tier is only ever assigned by a verified RevenueCat webhook — so cloud sync
+switches on a moment later, once the webhook lands. Development accounts get a
+Tier through [`pnpm --filter @motif/infra tier`](infra/README.md). Pro Ideas are copied to the
 authenticated cloud relay as well as using the existing local-network path when
 available. Signing
 Capture into a paid account pairs that Capture through the account, so multiple
@@ -109,6 +111,101 @@ Capture extracts normalized amplitude peaks from each saved audio file and keeps
 them in a device-local sidecar, outside portable Idea metadata. Library entries
 render those real peaks; Ideas captured before sidecars existed retain a stable
 synthetic fallback.
+
+## Subscriptions (RevenueCat)
+
+Capture sells Pro through RevenueCat's SDK and hosted Paywall
+(`react-native-purchases` + `react-native-purchases-ui`). Two rules govern the
+integration, and most setup mistakes are a violation of one of them:
+
+1. **The store unlocks Pro; the backend unlocks cloud relay.** A completed
+   purchase makes `unlockedTier` return Pro straight away, so stereo, WAV, and the
+   rest are live before any webhook. Cloud relay routes are checked server-side
+   against the account Tier, which only a verified RevenueCat webhook assigns — so
+   Capture reconciles `GET /me` in the background and reports `cloudSyncPending`
+   until it agrees. See [infra/README.md](infra/README.md).
+2. **Purchases belong to the account, not the device.** The webhook rejects
+   anonymous (`$RCAnonymousID:`) app user ids, so Capture calls
+   `Purchases.logIn(<Cognito sub>)` at login and on every session restore. A
+   purchase made while logged out could never reach an account, so choosing Pro
+   while signed out opens the Account dialog first and the purchase resumes by
+   itself once login succeeds — the detour is not a dead end.
+
+Prices come from the offering (`currentProOffer`), so the store's own localized
+price is quoted on the upgrade button and on the Sync screen before anything is
+tapped. If the dashboard has products but no Paywall, `presentPaywall` returns
+`NOT_PRESENTED` and Capture buys the quoted package directly rather than
+appearing to do nothing; the store still shows its own confirmation sheet.
+
+### Dashboard setup
+
+| Item | Value |
+|---|---|
+| Entitlement identifier | `Motif Pro` — must equal `REVENUECAT_PRO_ENTITLEMENT_ID` on the Lambda and `PRO_ENTITLEMENT_ID` in `apps/capture/src/core/billing.ts` |
+| Offering | `default` (the "current" offering the paywall loads) |
+| Packages | Annual (`$rc_annual`) and Monthly (`$rc_monthly`) |
+| Products | Subscription products attached to those packages, both granting `Motif Pro` |
+
+With the Test Store (below) the products and offering are created entirely in the
+RevenueCat dashboard. For real sales, create the two subscription products in App
+Store Connect and Google Play first, import them into RevenueCat, attach each to
+its package in the `default` offering, and attach the `Motif Pro` entitlement to
+both. Then design the Paywall against that offering — its pricing and copy are
+dashboard-side, so they change without an app release. Enable the Customer Center
+to get cancellation, plan changes, refund requests (iOS), and restore; Capture
+presents it from **Account → Manage subscription** rather than building those
+screens. If the Customer Center is not enabled, that button falls back to
+`Purchases.showManageSubscriptions()` — the App Store's own management sheet —
+and then to the store's management URL, so cancelling is never unreachable.
+
+Webhook configuration (URL and Authorization credential) is in
+[infra/README.md](infra/README.md).
+
+### API keys
+
+All of these are **public** SDK keys, found under RevenueCat → Project settings →
+API keys. The secret key is never used by the app.
+
+Development defaults to the **Test Store** key, which is already set in
+`src/billing.ts`. It needs no App Store Connect or Play Console setup and
+simulates real purchases — they update `CustomerInfo`, trigger entitlements, and
+appear in the dashboard. One Test Store key serves both platforms:
+
+```bash
+EXPO_PUBLIC_MOTIF_REVENUECAT_TEST_KEY=test_xxxxxxxxxxxxxxxxxxxx   # optional override
+```
+
+For anything you intend to ship, set the per-store keys as EAS environment
+variables. Either one takes precedence over the Test Store key on its platform:
+
+```bash
+EXPO_PUBLIC_MOTIF_REVENUECAT_IOS_KEY=appl_xxxxxxxxxxxxxxxxxxxx
+EXPO_PUBLIC_MOTIF_REVENUECAT_ANDROID_KEY=goog_xxxxxxxxxxxxxxxxxxxx
+```
+
+RevenueCat forbids submitting an app configured with a Test Store key, so
+`configureBilling()` refuses to configure a release build that has no store key
+rather than shipping an app whose purchases take no money. It also checks key
+prefixes, so a mispasted key produces a clear message instead of an opaque failure
+at the paywall. Billing is unavailable on the web build; Capture stays fully
+usable at Free there.
+
+On iOS the Test Store only works under the **Debug** build configuration.
+
+### After installing
+
+Both packages are native modules, so a JS reload is not enough:
+
+```bash
+cd apps/capture
+npx expo prebuild --clean   # regenerates ios/ + android/ (both are gitignored)
+pnpm ios                    # or: pnpm android
+```
+
+Expo Go cannot run either package, so a development build is required whichever
+store you point at. Test Store purchases are simulated by RevenueCat rather than
+StoreKit or Play Billing, which is what removes the store-console setup; real
+sandbox purchases still need a device signed into a sandbox store account.
 
 ## Bridge (desktop)
 

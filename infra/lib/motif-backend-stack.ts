@@ -114,7 +114,7 @@ export class MotifBackendStack extends Stack {
         AUDIO_BUCKET_NAME: audioBucket.bucketName,
         REVENUECAT_WEBHOOK_AUTHORIZATION:
           revenueCatWebhookCredential.secretValue.unsafeUnwrap(),
-        REVENUECAT_PRO_ENTITLEMENT_ID: 'pro',
+        REVENUECAT_PRO_ENTITLEMENT_ID: 'Motif Pro',
       },
     });
     table.grant(apiFn,

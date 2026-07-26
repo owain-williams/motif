@@ -16,6 +16,12 @@ export interface AuthTokens {
 }
 
 export interface AccountProfile {
+  /**
+   * The Cognito subject id. This is the identity RevenueCat purchases are
+   * attached to, because the billing webhook projects Tier onto this key and
+   * refuses anonymous store ids.
+   */
+  readonly sub: string;
   readonly email: string;
   readonly tier: Tier;
   /** Every audio byte this account currently holds in the cloud relay. */

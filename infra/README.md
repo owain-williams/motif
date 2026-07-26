@@ -17,7 +17,7 @@ serverless — no VPC, RDS, NAT, or bastion, so idle cost is ~$0.
 | API Gateway HTTP API + Lambda | Health, verified RevenueCat lifecycle events, account profiles, and authenticated cloud-relay routes |
 | Secrets Manager | Generated RevenueCat webhook Authorization credential |
 
-`POST /webhooks/revenuecat` projects the `pro` RevenueCat entitlement onto the
+`POST /webhooks/revenuecat` projects the `Motif Pro` RevenueCat entitlement onto the
 owning Cognito account's Tier. It requires the exact generated Authorization
 credential; duplicate and out-of-order lifecycle events cannot replace newer
 state. Relay routes require a Cognito ID token and reject Free accounts. Audio: `GET
@@ -87,7 +87,10 @@ Re-read anytime with:
 - **RevenueCat setup:** read the `RevenueCatWebhookCredentialSecretName` stack
   output, retrieve that secret value, and configure it as the webhook's exact
   Authorization header. Configure the RevenueCat entitlement identifier as
-  `pro`, matching `REVENUECAT_PRO_ENTITLEMENT_ID` on the Lambda.
+  `Motif Pro`, matching `REVENUECAT_PRO_ENTITLEMENT_ID` on the Lambda and
+  `PRO_ENTITLEMENT_ID` in `apps/capture/src/core/billing.ts`. All three must
+  agree; a mismatch means the webhook recognizes no entitlement and quietly
+  grants no one Pro.
 - **Bootstrap:** this env is CDK-bootstrapped (`hnb659fds`). If a deploy fails
   with `No bucket named 'cdk-hnb659fds-assets-...'`, the bootstrap staging bucket
   was deleted out-of-band — recreate it with that exact name (block public

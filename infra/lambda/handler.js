@@ -60,8 +60,11 @@ async function quotaExceededResponse(services, sub, additionalBytes) {
 function createHandler(services, options = {}) {
   const revenueCatAuthorization = options.revenueCatAuthorization ??
     process.env.REVENUECAT_WEBHOOK_AUTHORIZATION;
+  // Must equal PRO_ENTITLEMENT_ID in apps/capture/src/core/billing.ts: the
+  // webhook only projects Pro for entitlement ids it recognizes, so a mismatch
+  // silently grants nobody anything.
   const proEntitlementId = options.proEntitlementId ??
-    process.env.REVENUECAT_PRO_ENTITLEMENT_ID ?? 'pro';
+    process.env.REVENUECAT_PRO_ENTITLEMENT_ID ?? 'Motif Pro';
 
   return async (event) => {
     const routeKey = event.routeKey || '';

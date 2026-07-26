@@ -40,6 +40,10 @@ _Avoid_: Archived, cloud-only
 The subscription level of an account — Free or Pro — that determines sync transport, cloud storage quota, recording channel count, and which audio formats are available to record in. Pro requires a user account; Free does not. Verified billing assigns a Tier and nothing else does: Capture and Bridge read the Tier the account already holds, and never ask for one.
 _Avoid_: Plan, subscription level
 
+**Entitlement**:
+What the app store says the customer has paid for, as reported by the store's own receipt validation. An Entitlement is not a Tier: it is the evidence billing projects a Tier from. The store's answer reaches the buying device before the billing webhook reaches Motif's backend, so immediately after a purchase the Entitlement says Pro while the account Tier still says Free. Capture resolves that window by unlocking device-local Pro capabilities — stereo, WAV — from the Entitlement, while anything the backend serves (cloud relay above all) stays gated on the account Tier, which no client claim can move. The two agree within seconds.
+_Avoid_: Licence, receipt
+
 ### Tiers
 
 | Tier | Sync transport              | Cloud storage | Recording channels | Audio format                                     |

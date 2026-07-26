@@ -39,6 +39,8 @@ export function SyncScreen({
   now,
   accountLabel,
   tier,
+  proPriceLine,
+  cloudSyncPending,
   recordingFormat,
   formatChoices,
   audioFormat,
@@ -50,6 +52,7 @@ export function SyncScreen({
   onPair,
   onUnpair,
   onOpenAccount,
+  onUpgrade,
   onSelectFormat,
   onSelectChannels,
   onToggleLocationTagging,
@@ -67,6 +70,10 @@ export function SyncScreen({
   now: number;
   accountLabel: string;
   tier: Tier;
+  /** The store's localized price for Pro, or null until the store answers. */
+  proPriceLine: string | null;
+  /** Pro is paid for, but the account Tier that authorizes relay hasn't caught up. */
+  cloudSyncPending: boolean;
   recordingFormat: string;
   formatChoices: readonly AudioFormat[];
   audioFormat: AudioFormat;
@@ -78,6 +85,8 @@ export function SyncScreen({
   onPair: () => void;
   onUnpair: () => void;
   onOpenAccount: () => void;
+  /** Starts the upgrade, routing through login first when signed out. */
+  onUpgrade: () => void;
   onSelectFormat: (format: AudioFormat) => void;
   onSelectChannels: (channels: RecordingChannelCount) => void;
   onToggleLocationTagging: (enabled: boolean) => void;
@@ -225,16 +234,31 @@ export function SyncScreen({
             </View>
           </View>
 
-          {tier === "free" ? (
+          {/* The window after a purchase where the store says Pro but the
+              account doesn't yet. Stereo and WAV are already live; cloud sync
+              is authorized server-side, so it waits for the webhook. Saying so
+              beats a Sync screen that silently looks unchanged. */}
+          {cloudSyncPending ? (
             <View style={styles.setting}>
               <View style={styles.settingText}>
                 <Text style={styles.settingLabel}>Motif Pro</Text>
-                <Text style={styles.settingValue}>
-                  Stereo and WAV recording, plus cloud sync away from home.
-                  Upgrades aren&apos;t available yet.
+                <Text style={styles.settingValue} numberOfLines={2}>
+                  Purchased — cloud sync switches on once your account catches
+                  up.
                 </Text>
               </View>
             </View>
+          ) : tier === "free" ? (
+            <SettingRow
+              label="Motif Pro"
+              value={
+                proPriceLine
+                  ? `${proPriceLine} · stereo, WAV, cloud sync`
+                  : "Stereo and WAV recording, plus cloud sync"
+              }
+              action="Upgrade"
+              onPress={onUpgrade}
+            />
           ) : null}
 
           <View style={styles.setting}>

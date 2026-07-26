@@ -155,6 +155,27 @@ import {
 } from "./src/core/account-session";
 import type { AccountSession } from "./src/core/account-session";
 import { AccountDialog } from "./src/components/AccountDialog";
+import {
+  billingIsAvailable,
+  configureBilling,
+  currentEntitlement,
+  currentProOffer,
+  forgetBillingAccount,
+  identifyBillingAccount,
+  observeEntitlement,
+  presentProPaywall,
+  presentSubscriptionManagement,
+  restoreProPurchase,
+} from "./src/billing";
+import {
+  NO_ENTITLEMENT,
+  PRO_DISPLAY_NAME,
+  awaitTierProjection,
+  cloudSyncPending,
+  offerPriceLine,
+  unlockedTier,
+} from "./src/core/billing";
+import type { EntitlementSnapshot, ProOffer } from "./src/core/billing";
 import { LIBRARY_WAVEFORM_BAR_COUNT } from "./src/core/idea-waveform";
 import { setBackgroundSyncEnabled } from "./src/background-sync";
 
@@ -185,20 +206,45 @@ const RELATIVE_TIME_REFRESH_MS = 60_000;
 /** How long a confirmation stays up before it stops being news. */
 const TOAST_MS = 2600;
 
+/**
+ * Long enough for the Account dialog's fade-out to finish. Only the store
+ * paywall needs this: it is a native modal, and iOS refuses to present one
+ * while a React Native modal is still dismissing.
+ */
+const DIALOG_DISMISS_MS = 400;
+
 /** Everything a sync pass needs: the paired Bridge, who we are, what we have. */
 interface SyncInputs {
   readonly bridge: PairedBridge | null;
   readonly capture: DeviceIdentity;
   readonly library: IdeaMetadata[];
-  readonly tier: Tier;
+  /**
+   * The account's own Tier, never a Tier unlocked locally from a store
+   * entitlement: the relay authorizes server-side, so anything else here just
+   * buys a 403.
+   */
+  readonly cloudTier: Tier;
   readonly idToken: string | null;
 }
 
 export default function App() {
   const [fontsLoaded] = useFonts(MOTIF_FONTS);
   const [account, setAccount] = useState<AccountSession>(ANONYMOUS_ACCOUNT);
+  const [entitlement, setEntitlement] =
+    useState<EntitlementSnapshot>(NO_ENTITLEMENT);
+  const [proOffer, setProOffer] = useState<ProOffer | null>(null);
+  const [storeAvailable, setStoreAvailable] = useState(false);
   const [settings, setSettings] = useState<CaptureSettings | null>(null);
-  const tier = effectiveAccountTier(account);
+  // Two Tiers, deliberately. `tier` is what this device may do on its own —
+  // stereo, WAV, the UI — and follows the store, so a purchase takes effect the
+  // moment it clears rather than waiting on the webhook.
+  const tier = unlockedTier(account, entitlement);
+  // `cloudTier` is what the *backend* will honour, and follows the account
+  // alone. Cloud relay, offload and redownload are authorized server-side, so
+  // acting on a store entitlement the webhook hasn't projected yet would only
+  // produce 403s and an Offload button that fails. `cloudSyncPending` names the
+  // window where the two disagree; it closes within seconds.
+  const cloudTier = effectiveAccountTier(account);
   const channelChoices = availableRecordingChannels(tier);
   const formatChoices = availableRecordingFormats(tier);
   const profile = recordingProfile(
@@ -246,6 +292,9 @@ export default function App() {
   const [now, setNow] = useState(() => Date.now());
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authTokensRef = useRef<AuthTokens | null>(null);
+  // Set when the user chooses Pro while signed out: the purchase resumes once
+  // the login it detoured through succeeds.
+  const [resumeUpgrade, setResumeUpgrade] = useState(false);
   // Latest sync inputs, so the periodic timer always offers the current Library.
   const syncInputsRef = useRef<SyncInputs | null>(null);
   // Latest Library, so a sync pass merges Bridge edits into current state (not
@@ -386,6 +435,62 @@ export default function App() {
     };
   }, []);
 
+  // Configure billing before anything asks about entitlements, and keep
+  // watching: renewals, expirations, and Family Sharing changes arrive while the
+  // app is open, without any purchase happening here.
+  useEffect(() => {
+    const problem = configureBilling();
+    if (problem) {
+      // Billing being unavailable is never fatal. Capture still works at Free,
+      // and the Account dialog explains that upgrading isn't possible here.
+      if (__DEV__) console.warn(`[billing] ${problem.problem}`);
+      return;
+    }
+    setStoreAvailable(billingIsAvailable());
+    currentEntitlement().then(setEntitlement);
+    // The price is fetched from the store, so it is quoted in the user's own
+    // currency. A null offer only softens the button's label; it never removes
+    // the upgrade, because the hosted paywall quotes the price itself.
+    currentProOffer().then(setProOffer);
+    return observeEntitlement(setEntitlement);
+  }, []);
+
+  // Picks a purchase back up after the login it detoured through. Deliberately
+  // waits for the Account dialog to be gone: the paywall is a native modal, and
+  // iOS will not present one over a React Native modal that is still dismissing
+  // — the purchase would silently never appear.
+  useEffect(() => {
+    if (showAccount || !resumeUpgrade) return;
+    if (account.kind !== "authenticated") return;
+
+    // Cleared by the timer rather than here: clearing first would change this
+    // effect's own dependencies, and the re-run's cleanup would cancel the
+    // timer before it ever fired.
+    const timer = setTimeout(() => {
+      setResumeUpgrade(false);
+      void upgradeToPro();
+    }, DIALOG_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [showAccount, resumeUpgrade, account.kind]);
+
+  // Re-read the Tier whenever the Account dialog opens, so a webhook that landed
+  // after Capture gave up polling is picked up without restarting the app.
+  useEffect(() => {
+    if (!showAccount) return;
+    const idToken = authTokensRef.current?.idToken;
+    if (!idToken) return;
+    let active = true;
+    loadAccount(idToken)
+      .then((profile) => {
+        if (active) setAccount(authenticatedAccount(profile));
+      })
+      // Offline: keep showing the last known Tier rather than dropping to Free.
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [showAccount]);
+
   // Restore login when possible. A missing/expired account session is soft:
   // Capture remains fully available with anonymous Free-tier behavior.
   useEffect(() => {
@@ -397,6 +502,11 @@ export default function App() {
         if (!active) return;
         authTokensRef.current = tokens;
         setAccount(authenticatedAccount(profile));
+        // Re-point the store customer at this account every launch: RevenueCat's
+        // identity is per-install, so without this a reinstall would buy against
+        // an anonymous id the webhook rejects.
+        const snapshot = await identifyBillingAccount(profile.sub);
+        if (active) setEntitlement(snapshot);
       })
       .catch(() => clearAuthTokens());
     return () => {
@@ -485,7 +595,7 @@ export default function App() {
   // a local failure never prevents a paid account from reaching cloud relay.
   const runSync = useCallback(
     async (inputs: SyncInputs) => {
-    const transports = syncTransports(inputs.tier, inputs.bridge !== null);
+    const transports = syncTransports(inputs.cloudTier, inputs.bridge !== null);
     const readAudio = (idea: IdeaMetadata) =>
       readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
     const statuses: string[] = [];
@@ -575,22 +685,22 @@ export default function App() {
           bridge: syncState.pairedBridge,
           capture: captureIdentity,
           library,
-          tier,
+          cloudTier,
           idToken: authTokensRef.current?.idToken ?? null,
         }
       : null;
-  }, [syncState.pairedBridge, captureIdentity, library, tier, account]);
+  }, [syncState.pairedBridge, captureIdentity, library, cloudTier, account]);
 
   // Keep the OS-scheduled headless job enabled whenever a persisted sync path
   // exists. It supplements this foreground timer; the OS decides the actual
   // background execution time and may defer it well beyond the 15-minute floor.
   useEffect(() => {
     if (!captureIdentity) return;
-    const enabled = syncTransports(tier, syncState.pairedBridge !== null).length > 0;
+    const enabled = syncTransports(cloudTier, syncState.pairedBridge !== null).length > 0;
     void setBackgroundSyncEnabled(enabled).catch(() => {
       // Unsupported/restricted scheduling is soft: foreground sync still works.
     });
-  }, [syncState.pairedBridge, captureIdentity, tier, account]);
+  }, [syncState.pairedBridge, captureIdentity, cloudTier, account]);
 
   /** Runs a sync pass immediately with the latest inputs, if any path is open. */
   const syncNow = useCallback(() => {
@@ -601,11 +711,11 @@ export default function App() {
   // Sync now and on an interval whenever LAN or paid cloud relay is available.
   useEffect(() => {
     if (!captureIdentity) return;
-    if (syncTransports(tier, syncState.pairedBridge !== null).length === 0) return;
+    if (syncTransports(cloudTier, syncState.pairedBridge !== null).length === 0) return;
     syncNow();
     const timer = setInterval(syncNow, SYNC_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [syncState.pairedBridge, captureIdentity, tier, account, syncNow]);
+  }, [syncState.pairedBridge, captureIdentity, cloudTier, account, syncNow]);
 
   async function extractAndPersistWaveform(ideaId: string, fileUri: string) {
     try {
@@ -681,7 +791,7 @@ export default function App() {
     const next = insertIdea(library, idea);
     saveLibrary(next);
     setLibrary(next);
-    const transports = syncTransports(tier, syncState.pairedBridge !== null);
+    const transports = syncTransports(cloudTier, syncState.pairedBridge !== null);
     showToast(transports.length > 0 ? "Saved · sending to Bridge" : "Saved");
     // Nudge the new Idea to Bridge right away if paired (copy semantics — the
     // Capture-side Idea just saved stays put); the interval is the fallback.
@@ -690,7 +800,7 @@ export default function App() {
         bridge: syncState.pairedBridge,
         capture: captureIdentity,
         library: next,
-        tier,
+        cloudTier,
         idToken: authTokensRef.current?.idToken ?? null,
       }).then(() => {
         // Only claim it landed once a peer has actually said so.
@@ -800,7 +910,7 @@ export default function App() {
   }
 
   async function handleIdeaStorageAction(idea: IdeaMetadata) {
-    const action = ideaStorageAction(tier, idea);
+    const action = ideaStorageAction(cloudTier, idea);
     if (!action || storageBusyId !== null || isRecording) return;
     const tokens = authTokensRef.current;
     if (!tokens) {
@@ -942,7 +1052,7 @@ export default function App() {
         bridge,
         capture: captureIdentity,
         library,
-        tier,
+        cloudTier,
         idToken: authTokensRef.current?.idToken ?? null,
       });
     } catch {
@@ -990,6 +1100,7 @@ export default function App() {
     await saveAuthTokens(tokens);
     authTokensRef.current = tokens;
     setAccount(authenticatedAccount(profile));
+    setEntitlement(await identifyBillingAccount(profile.sub));
     setShowAccount(false);
   }
 
@@ -1005,8 +1116,129 @@ export default function App() {
   async function logout() {
     await clearAuthTokens();
     authTokensRef.current = null;
+    setResumeUpgrade(false);
     setAccount(ANONYMOUS_ACCOUNT);
+    // Return the store customer to anonymous too, so the next account signed in
+    // on this device doesn't inherit these entitlements.
+    await forgetBillingAccount();
+    setEntitlement(NO_ENTITLEMENT);
     setShowAccount(false);
+  }
+
+  /**
+   * Catches the account Tier up with a purchase the store has already granted.
+   * Pro is live locally before this runs; what it unblocks is cloud relay, which
+   * the backend refuses until its own Tier says Pro. Runs in the background so a
+   * slow webhook never holds up the unlock.
+   */
+  async function reconcileAccountTier(): Promise<void> {
+    const idToken = authTokensRef.current?.idToken;
+    if (!idToken) return;
+
+    const projection = await awaitTierProjection("pro", {
+      loadTier: async () => (await loadAccount(idToken)).tier,
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+
+    if (!projection.settled) return;
+    setAccount((current) =>
+      current.kind === "authenticated"
+        ? authenticatedAccount({ email: current.email, tier: projection.tier })
+        : current,
+    );
+  }
+
+  /**
+   * Closing the dialog abandons the purchase as well as the login. Without
+   * this, an unrelated login later on would open a paywall out of nowhere.
+   */
+  function closeAccountDialog() {
+    setResumeUpgrade(false);
+    setShowAccount(false);
+  }
+
+  /**
+   * Starts the upgrade from anywhere, including while signed out. Pro is an
+   * account Tier — the billing webhook refuses anonymous store ids — so an
+   * account has to exist first, and the purchase resumes once login lands.
+   */
+  function startUpgrade() {
+    if (account.kind === "authenticated") {
+      void upgradeToPro();
+      return;
+    }
+    setResumeUpgrade(true);
+    setShowAccount(true);
+  }
+
+  /**
+   * Presents the RevenueCat paywall. A completed purchase unlocks Pro straight
+   * away from the store entitlement — no waiting on Motif's backend.
+   */
+  async function upgradeToPro() {
+    const outcome = await presentProPaywall();
+    if (outcome.kind === "dismissed") return;
+    if (outcome.kind === "failed") {
+      // Covers cancellation-adjacent outcomes too: nothing is granted, and
+      // Capture stays exactly as usable at Free as it was before.
+      Alert.alert(PRO_DISPLAY_NAME, outcome.message);
+      return;
+    }
+
+    // Confirm against the store rather than trusting the paywall's word: a
+    // restore can succeed while restoring something other than Pro, and saying
+    // "Pro is active" when it isn't is worse than saying nothing.
+    const snapshot = await currentEntitlement();
+    setEntitlement(snapshot);
+    if (!snapshot.proIsActive) {
+      Alert.alert(
+        PRO_DISPLAY_NAME,
+        `Your ${PRO_DISPLAY_NAME} purchase hasn't cleared yet. We'll unlock Pro as soon as it does.`,
+      );
+      return;
+    }
+
+    showToast(`${PRO_DISPLAY_NAME} is active.`);
+    void reconcileAccountTier();
+  }
+
+  /** Cancellations, plan changes, refunds, and restores, all via RevenueCat. */
+  async function manageSubscription() {
+    const opened = await presentSubscriptionManagement((snapshot) => {
+      setEntitlement(snapshot);
+      void reconcileAccountTier();
+    });
+    if (!opened) {
+      // Every route to the store's own screen failed. Say so rather than let
+      // the button look like it did nothing.
+      Alert.alert(
+        PRO_DISPLAY_NAME,
+        "Motif couldn't open your store's subscription settings. Manage this subscription from the App Store app.",
+      );
+      return;
+    }
+    setEntitlement(await currentEntitlement());
+  }
+
+  /** Reattaches an existing subscription after a reinstall or device change. */
+  async function restorePurchases() {
+    const result = await restoreProPurchase();
+    if ("message" in result) {
+      Alert.alert(PRO_DISPLAY_NAME, result.message);
+      return;
+    }
+
+    setEntitlement(result.snapshot);
+    if (!result.snapshot.proIsActive) {
+      Alert.alert(
+        `${PRO_DISPLAY_NAME}`,
+        "No previous purchase was found for this store account.",
+      );
+      return;
+    }
+
+    showToast(`${PRO_DISPLAY_NAME} restored.`);
+    void reconcileAccountTier();
   }
 
   /**
@@ -1067,7 +1299,7 @@ export default function App() {
   const summary = syncSummary({ library, deletions, deliveredIds });
   const queuedIds = queuedIdeaIds(library, deletions, deliveredIds);
   const paired = isPaired(syncState);
-  const canSync = syncTransports(tier, paired).length > 0;
+  const canSync = syncTransports(cloudTier, paired).length > 0;
   const playbackProgress =
     playerStatus.duration > 0
       ? Math.min(1, Math.max(0, playerStatus.currentTime / playerStatus.duration))
@@ -1148,6 +1380,8 @@ export default function App() {
               : "Free · not signed in"
           }
           tier={tier}
+          proPriceLine={storeAvailable ? offerPriceLine(proOffer) : null}
+          cloudSyncPending={cloudSyncPending(account, entitlement)}
           recordingFormat={recordingFormat}
           formatChoices={formatChoices}
           audioFormat={profile.audioFormat}
@@ -1159,6 +1393,7 @@ export default function App() {
           onPair={() => setShowPair(true)}
           onUnpair={handleUnpair}
           onOpenAccount={() => setShowAccount(true)}
+          onUpgrade={startUpgrade}
           onSelectFormat={(requestedAudioFormat) =>
             updateSettings({ requestedAudioFormat })
           }
@@ -1232,7 +1467,7 @@ export default function App() {
       <IdeaActionsSheet
         idea={actionsTarget}
         storageAction={
-          actionsTarget ? ideaStorageAction(tier, actionsTarget) : null
+          actionsTarget ? ideaStorageAction(cloudTier, actionsTarget) : null
         }
         busy={storageBusyId !== null}
         onShare={() => runIdeaAction((idea) => void shareIdea(idea))}
@@ -1277,11 +1512,17 @@ export default function App() {
       <AccountDialog
         visible={showAccount}
         account={account}
-        onClose={() => setShowAccount(false)}
+        entitlement={entitlement}
+        offer={proOffer}
+        storeAvailable={storeAvailable}
+        onClose={closeAccountDialog}
         onLogin={login}
         onSignUp={createAccount}
         onConfirm={confirmAccount}
         onLogout={logout}
+        onUpgrade={upgradeToPro}
+        onManageSubscription={manageSubscription}
+        onRestorePurchases={restorePurchases}
       />
 
       <StatusBar style="light" />

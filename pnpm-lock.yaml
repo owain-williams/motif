@@ -17,6 +17,15 @@ importers:
 
   apps/bridge:
     dependencies:
+      '@fontsource/geist-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/geist-sans':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/instrument-serif':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@motif/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -96,6 +105,12 @@ importers:
       react-native:
         specifier: 0.86.0
         version: 0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3)
+      react-native-purchases:
+        specifier: ^10.4.4
+        version: 10.4.4(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
+      react-native-purchases-ui:
+        specifier: ^10.4.4
+        version: 10.4.4(react-native-purchases@10.4.4(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3))(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
       react-native-svg:
         specifier: 15.15.4
         version: 15.15.4(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
@@ -1019,6 +1034,15 @@ packages:
     resolution: {integrity: sha512-4aQzz9vgxcNXFfo/iyNgDDYfsU5XGKKxWxZopw0cVotHiW+U8IJbIxMaxsINs6bHhtkG3StKNPcOrn3eBuxKPw==}
     hasBin: true
 
+  '@fontsource/geist-mono@5.3.0':
+    resolution: {integrity: sha512-UtJ1BBBCVpMYdIcW7nEB45UAoAw5M53ZXs2t0ciPW+IokuAAIc56M8+kW5tXbRJCTpDw4XTtU7proT6NdQAHTg==}
+
+  '@fontsource/geist-sans@5.3.0':
+    resolution: {integrity: sha512-AmG7cE1AvE4NHROPaOl1sN+a02cB5xy6pA/ZV76HXqWTCsJTV2SCBc9DTFHfJqnVOODm7HhXIYtUIb75NP5QXQ==}
+
+  '@fontsource/instrument-serif@5.3.0':
+    resolution: {integrity: sha512-mDiaIg0u67sYV59fie92Wz4sM8UiVlbL7fLxnFPCKkX15DMASEnQTREbaP5S5/3DCcsoAOcQ0sV9E4AeY4QqYQ==}
+
   '@inthepocket/react-native-service-discovery@0.2.9':
     resolution: {integrity: sha512-HBDd0QEBV44h6XIDjHdsBi2kgdnyxS14if6yEN/Y5LnR5BDmqGYjeLVA8xvWimPi9Lr7i472ut1o3K2Ng1sveg==}
     peerDependencies:
@@ -1130,6 +1154,15 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  '@revenuecat/purchases-js-hybrid-mappings@18.22.2':
+    resolution: {integrity: sha512-drJakkXRGvufB/OtzANsFLNyhF/1f7+1Bpn4LXucTKR+RpaqZwHFXHKHN3vQEICEU2zzTps1djkFGQwX4pzaEw==}
+
+  '@revenuecat/purchases-js@1.47.2':
+    resolution: {integrity: sha512-ihFKthXnKJjStDBJ6KkmyiJ+E/OjJ8vdq4G8hcvMEvyjz4T31NKdMMgcDeEzVbV4zPpFtTWNXdcPpdPbG6q6fw==}
+
+  '@revenuecat/purchases-typescript-internal@18.22.2':
+    resolution: {integrity: sha512-IqXfrC9C0ABczkE8SQNcrfB9SUWgH7gUCV26FNSnxxZnHia94cOn+d5xtfWmjpn70bf5Kjci9rhhP3efRiTVIA==}
 
   '@rolldown/binding-android-arm64@1.1.5':
     resolution: {integrity: sha512-lZg8fqIv2v7FF237bwMgzGZEJvGL79/s5knJ/i6FmsGF4XXlzccZ4jb+TrFIxtSSxFtIpdsgrPZeMk1I9AFcyQ==}
@@ -2835,6 +2868,27 @@ packages:
 
   react-is@18.3.1:
     resolution: {integrity: sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg==}
+
+  react-native-purchases-ui@10.4.4:
+    resolution: {integrity: sha512-ziykTvsKkwOWWsg5Tm5/YhiaSmQdkLSF59F2WMa4kw1iMXhIhykQ8jdmvZlJ3nqbAd7xEk7tq41t8DA0gt5L0Q==}
+    peerDependencies:
+      react: '*'
+      react-native: '>= 0.73.0'
+      react-native-purchases: 10.4.4
+      react-native-web: '*'
+    peerDependenciesMeta:
+      react-native-web:
+        optional: true
+
+  react-native-purchases@10.4.4:
+    resolution: {integrity: sha512-cvOF75u8Q48fkmEgE5tSTGiTyZwIFBR72owdZJgGCkC6xoHOBnAJ3VvXO+DG+VfGeySgleUmdT9PUPj+86ftMg==}
+    peerDependencies:
+      react: '>= 16.6.3'
+      react-native: '>= 0.73.0'
+      react-native-web: '*'
+    peerDependenciesMeta:
+      react-native-web:
+        optional: true
 
   react-native-svg@15.15.4:
     resolution: {integrity: sha512-boT/vIRgj6zZKBpfTPJJiYWMbZE9duBMOwPK6kCSTgxsS947IFMOq9OgIFkpWZTB7t229H24pDRkh3W9ZK/J1A==}
@@ -4713,6 +4767,12 @@ snapshots:
       chalk: 4.1.2
       js-yaml: 4.3.0
 
+  '@fontsource/geist-mono@5.3.0': {}
+
+  '@fontsource/geist-sans@5.3.0': {}
+
+  '@fontsource/instrument-serif@5.3.0': {}
+
   '@inthepocket/react-native-service-discovery@0.2.9(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)':
     dependencies:
       react: 19.2.3
@@ -4850,6 +4910,14 @@ snapshots:
       react-native: 0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3)
     optionalDependencies:
       '@types/react': 19.2.17
+
+  '@revenuecat/purchases-js-hybrid-mappings@18.22.2':
+    dependencies:
+      '@revenuecat/purchases-js': 1.47.2
+
+  '@revenuecat/purchases-js@1.47.2': {}
+
+  '@revenuecat/purchases-typescript-internal@18.22.2': {}
 
   '@rolldown/binding-android-arm64@1.1.5':
     optional: true
@@ -6501,6 +6569,24 @@ snapshots:
       scheduler: 0.27.0
 
   react-is@18.3.1: {}
+
+  react-native-purchases-ui@10.4.4(react-native-purchases@10.4.4(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3))(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3):
+    dependencies:
+      '@revenuecat/purchases-typescript-internal': 18.22.2
+      react: 19.2.3
+      react-native: 0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3)
+      react-native-purchases: 10.4.4(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
+    optionalDependencies:
+      react-native-web: 0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+
+  react-native-purchases@10.4.4(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3):
+    dependencies:
+      '@revenuecat/purchases-js-hybrid-mappings': 18.22.2
+      '@revenuecat/purchases-typescript-internal': 18.22.2
+      react: 19.2.3
+      react-native: 0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3)
+    optionalDependencies:
+      react-native-web: 0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
 
   react-native-svg@15.15.4(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.3))(react@19.2.3):
     dependencies:

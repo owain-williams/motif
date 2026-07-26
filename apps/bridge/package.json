@@ -14,6 +14,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@fontsource/geist-mono": "^5.3.0",
+    "@fontsource/geist-sans": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
     "@motif/shared": "workspace:*",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-opener": "^2.5.4"

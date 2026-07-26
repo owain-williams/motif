@@ -8,6 +8,8 @@ import {
   View,
 } from "react-native";
 import type { AccountSession } from "../core/account-session";
+import { billingPresentation } from "../core/billing";
+import type { EntitlementSnapshot, ProOffer } from "../core/billing";
 import { colors, fonts, radii } from "../theme";
 import { Dialog } from "./Sheet";
 
@@ -16,6 +18,12 @@ type Mode = "login" | "signup" | "confirm";
 interface AccountDialogProps {
   readonly visible: boolean;
   readonly account: AccountSession;
+  /** What the store says, which can lead the account's Tier after a purchase. */
+  readonly entitlement: EntitlementSnapshot;
+  /** The plan on sale, with the store's localized price. Null until it loads. */
+  readonly offer: ProOffer | null;
+  /** False where nothing can be bought — the web build, or a config problem. */
+  readonly storeAvailable: boolean;
   readonly onClose: () => void;
   readonly onLogin: (email: string, password: string) => Promise<void>;
   readonly onSignUp: (email: string, password: string) => Promise<void>;
@@ -25,16 +33,25 @@ interface AccountDialogProps {
     password: string,
   ) => Promise<void>;
   readonly onLogout: () => Promise<void>;
+  readonly onUpgrade: () => Promise<void>;
+  readonly onManageSubscription: () => Promise<void>;
+  readonly onRestorePurchases: () => Promise<void>;
 }
 
 export function AccountDialog({
   visible,
   account,
+  entitlement,
+  offer,
+  storeAvailable,
   onClose,
   onLogin,
   onSignUp,
   onConfirm,
   onLogout,
+  onUpgrade,
+  onManageSubscription,
+  onRestorePurchases,
 }: AccountDialogProps) {
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
@@ -78,6 +95,13 @@ export function AccountDialog({
     }
   }
 
+  const billing = billingPresentation({
+    account,
+    store: entitlement,
+    offer,
+    storeAvailable,
+  });
+
   return (
     <Dialog visible={visible} title="Account" onClose={onClose}>
       {account.kind === "authenticated" ? (
@@ -85,6 +109,46 @@ export function AccountDialog({
           <Text style={styles.email}>{account.email}</Text>
           <Text style={styles.label}>Tier</Text>
           <Text style={styles.tier}>{titleCase(account.tier)}</Text>
+          <Text style={styles.note}>{billing.message}</Text>
+
+          {/* The label carries the store's own price, so the tap that follows
+              is never for an unquoted amount. */}
+          {billing.kind === "offer-upgrade" ? (
+            <Pressable
+              disabled={busy}
+              onPress={() => run(onUpgrade)}
+              style={styles.primary}
+            >
+              {busy ? (
+                <ActivityIndicator color={colors.canvas} />
+              ) : (
+                <Text style={styles.primaryText}>{billing.actionLabel}</Text>
+              )}
+            </Pressable>
+          ) : null}
+
+          {billing.kind === "active" && billing.canManage ? (
+            <Pressable
+              disabled={busy}
+              onPress={() => run(onManageSubscription)}
+              style={styles.secondary}
+            >
+              <Text style={styles.secondaryText}>Manage subscription</Text>
+            </Pressable>
+          ) : null}
+
+          {/* Stores require a restore path, and it is also how a subscription
+              follows the user onto a new device or a second Motif account. */}
+          {billing.kind === "offer-upgrade" ? (
+            <Pressable
+              disabled={busy}
+              onPress={() => run(onRestorePurchases)}
+              style={styles.secondary}
+            >
+              <Text style={styles.secondaryText}>Restore purchases</Text>
+            </Pressable>
+          ) : null}
+
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Pressable disabled={busy} onPress={() => run(onLogout)} style={styles.secondary}>
             <Text style={styles.secondaryText}>Log out</Text>
@@ -133,7 +197,16 @@ export function AccountDialog({
           />
           {mode === "confirm" ? (
             <Text style={styles.note}>Enter the code sent to {email}.</Text>
-          ) : null}
+          ) : (
+            <>
+              <Text style={styles.note}>{billing.message}</Text>
+              {/* Quoted before the account is created, so signing up is never
+                  the price of finding out what Pro costs. */}
+              {billing.kind === "requires-account" && billing.priceLine ? (
+                <Text style={styles.note}>{billing.priceLine}</Text>
+              ) : null}
+            </>
+          )}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Pressable disabled={busy} onPress={submit} style={styles.primary}>
             {busy ? (
