@@ -90,8 +90,8 @@ persistence, device-local waveform sidecars, and playback wiring are in
 
 Capture can be used without an account at the Free tier. Its Account dialog also
 supports Cognito email sign-up/confirmation and login; logged-in sessions expose
-the account's Free/Pro tier. A temporary in-dialog tier control stands in for
-billing during development. Pro Ideas are copied to the authenticated cloud
+the account's Free/Pro tier. Verified RevenueCat lifecycle events own paid Tier
+changes. Pro Ideas are copied to the authenticated cloud
 relay as well as using the existing local-network path when available. Signing
 Capture into a paid account pairs that Capture through the account, so multiple
 phones/tablets signed into the same account contribute to one relay

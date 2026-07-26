@@ -1,5 +1,6 @@
 'use strict';
 
+const { timingSafeEqual } = require('node:crypto');
 const {
   DeleteItemCommand,
   DynamoDBClient,
@@ -17,6 +18,15 @@ const {
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const TIERS = new Set(['free', 'pro']);
+const REVENUECAT_GRANT_EVENTS = new Set([
+  'INITIAL_PURCHASE',
+  'RENEWAL',
+  'UNCANCELLATION',
+  'PRODUCT_CHANGE',
+  'NON_RENEWING_PURCHASE',
+  'TEMPORARY_ENTITLEMENT_GRANT',
+]);
+const REVENUECAT_REVOKE_EVENTS = new Set(['EXPIRATION', 'REFUND']);
 
 // This Lambda is deployed as plain JavaScript with no workspace dependencies,
 // so it cannot import @motif/shared. Keep this byte-for-byte mirror of
@@ -47,7 +57,12 @@ async function quotaExceededResponse(services, sub, additionalBytes) {
   });
 }
 
-function createHandler(services) {
+function createHandler(services, options = {}) {
+  const revenueCatAuthorization = options.revenueCatAuthorization ??
+    process.env.REVENUECAT_WEBHOOK_AUTHORIZATION;
+  const proEntitlementId = options.proEntitlementId ??
+    process.env.REVENUECAT_PRO_ENTITLEMENT_ID ?? 'pro';
+
   return async (event) => {
     const routeKey = event.routeKey || '';
     const rawPath = event.rawPath || event.requestContext?.http?.path || '/';
@@ -64,6 +79,32 @@ function createHandler(services) {
       });
     }
 
+    if (
+      routeKey === 'POST /webhooks/revenuecat' ||
+      (rawPath.endsWith('/webhooks/revenuecat') && method === 'POST')
+    ) {
+      const suppliedAuthorization = header(event.headers, 'authorization');
+      if (!matchingCredential(suppliedAuthorization, revenueCatAuthorization)) {
+        return json(401, { error: 'unauthorized' });
+      }
+
+      const payload = parseEventJson(event);
+      const revenueCatEvent = payload.event;
+      if (!validRevenueCatEvent(revenueCatEvent)) {
+        return json(400, { error: 'invalid_revenuecat_event' });
+      }
+
+      const tier = revenueCatTier(revenueCatEvent, proEntitlementId);
+      if (!tier) return json(200, { accepted: false });
+      const accepted = await services.accounts.projectRevenueCatTier(
+        revenueCatEvent.app_user_id,
+        tier,
+        revenueCatEventVersion(revenueCatEvent),
+        revenueCatEvent.id,
+      );
+      return json(200, { accepted, tier });
+    }
+
     const claims = event.requestContext?.authorizer?.jwt?.claims ?? {};
     if (!claims.sub) return json(401, { error: 'unauthorized' });
 
@@ -75,15 +116,6 @@ function createHandler(services) {
         tier: effectiveTier(profile.tier),
         cloudStorageBytesUsed: await services.relay.bytesUsed(claims.sub),
       });
-    }
-
-    if (routeKey === 'PUT /me/tier' || rawPath.endsWith('/me/tier')) {
-      const body = parseJson(event.body);
-      if (!TIERS.has(body.tier)) {
-        return json(400, { error: 'invalid_tier', allowed: [...TIERS] });
-      }
-      await services.accounts.setTier(claims.sub, claims.email ?? '', body.tier);
-      return json(200, { tier: body.tier });
     }
 
     if (rawPath.startsWith('/relay/')) {
@@ -260,18 +292,26 @@ function productionServices() {
         }));
         return { tier: result.Item?.tier?.S ?? 'free' };
       },
-      setTier: async (sub, email, tier) => {
-        await dynamo.send(new UpdateItemCommand({
-          TableName: tableName,
-          Key: profileKey(sub),
-          UpdateExpression: 'SET #tier = :tier, email = :email, updatedAt = :updatedAt',
-          ExpressionAttributeNames: { '#tier': 'tier' },
-          ExpressionAttributeValues: {
-            ':tier': { S: tier },
-            ':email': { S: email },
-            ':updatedAt': { S: new Date().toISOString() },
-          },
-        }));
+      projectRevenueCatTier: async (sub, tier, version, eventId) => {
+        try {
+          await dynamo.send(new UpdateItemCommand({
+            TableName: tableName,
+            Key: profileKey(sub),
+            UpdateExpression: 'SET #tier = :tier, revenueCatEventVersion = :version, revenueCatEventId = :eventId, updatedAt = :updatedAt',
+            ConditionExpression: 'attribute_not_exists(revenueCatEventVersion) OR revenueCatEventVersion < :version',
+            ExpressionAttributeNames: { '#tier': 'tier' },
+            ExpressionAttributeValues: {
+              ':tier': { S: tier },
+              ':version': { S: version },
+              ':eventId': { S: eventId },
+              ':updatedAt': { S: new Date().toISOString() },
+            },
+          }));
+          return true;
+        } catch (error) {
+          if (error?.name === 'ConditionalCheckFailedException') return false;
+          throw error;
+        }
       },
     },
     relay: {
@@ -476,6 +516,58 @@ function ideaKey(sub, id) {
 
 function relayObjectKey(sub, id) {
   return `accounts/${sub}/ideas/${id}`;
+}
+
+function header(headers, name) {
+  if (!headers) return '';
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+  return typeof entry?.[1] === 'string' ? entry[1] : '';
+}
+
+function matchingCredential(supplied, configured) {
+  if (!supplied || !configured) return false;
+  const suppliedBytes = Buffer.from(supplied);
+  const configuredBytes = Buffer.from(configured);
+  return suppliedBytes.length === configuredBytes.length &&
+    timingSafeEqual(suppliedBytes, configuredBytes);
+}
+
+function parseEventJson(event) {
+  const body = event.isBase64Encoded
+    ? Buffer.from(event.body ?? '', 'base64').toString('utf8')
+    : event.body;
+  return parseJson(body);
+}
+
+function validRevenueCatEvent(event) {
+  return event &&
+    typeof event.id === 'string' && event.id.length > 0 && event.id.length <= 255 &&
+    typeof event.type === 'string' &&
+    Number.isSafeInteger(event.event_timestamp_ms) && event.event_timestamp_ms >= 0 &&
+    typeof event.app_user_id === 'string' &&
+    /^[A-Za-z0-9._:-]{1,128}$/.test(event.app_user_id) &&
+    !event.app_user_id.startsWith('$RCAnonymousID:') &&
+    (event.entitlement_ids === null || event.entitlement_ids === undefined ||
+      (Array.isArray(event.entitlement_ids) &&
+        event.entitlement_ids.every((id) => typeof id === 'string')));
+}
+
+function revenueCatTier(event, proEntitlementId) {
+  if (!event.entitlement_ids?.includes(proEntitlementId)) return null;
+  if (REVENUECAT_GRANT_EVENTS.has(event.type)) return 'pro';
+  if (REVENUECAT_REVOKE_EVENTS.has(event.type)) return 'free';
+  // A cancellation carries authoritative current entitlement state: ordinary
+  // auto-renew cancellation remains Pro until its future expiration, while an
+  // immediate store refund has already expired. Projecting both cases also
+  // advances the event version, preventing an older delivery from winning.
+  if (event.type === 'CANCELLATION' && Number.isSafeInteger(event.expiration_at_ms)) {
+    return event.expiration_at_ms > event.event_timestamp_ms ? 'pro' : 'free';
+  }
+  return null;
+}
+
+function revenueCatEventVersion(event) {
+  return `${String(event.event_timestamp_ms).padStart(16, '0')}:${event.id}`;
 }
 
 function parseJson(body) {

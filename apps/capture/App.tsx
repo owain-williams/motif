@@ -139,7 +139,6 @@ import type { PairBridgeInput } from "./src/components/PairBridgeDialog";
 import {
   confirmSignUp,
   loadAccount,
-  setAccountTier,
   signIn,
   signUp,
 } from "./src/account-client";
@@ -1003,13 +1002,6 @@ export default function App() {
     await login(email, password);
   }
 
-  async function changeTier(tier: Tier) {
-    const tokens = authTokensRef.current;
-    if (!tokens) throw new Error("Please log in again.");
-    const profile = await setAccountTier(tokens.idToken, tier);
-    setAccount(authenticatedAccount(profile));
-  }
-
   async function logout() {
     await clearAuthTokens();
     authTokensRef.current = null;
@@ -1289,7 +1281,6 @@ export default function App() {
         onLogin={login}
         onSignUp={createAccount}
         onConfirm={confirmAccount}
-        onSetTier={changeTier}
         onLogout={logout}
       />
 

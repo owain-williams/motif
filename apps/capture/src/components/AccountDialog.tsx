@@ -7,7 +7,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import type { Tier } from "@motif/shared";
 import type { AccountSession } from "../core/account-session";
 import { colors, fonts, radii } from "../theme";
 import { Dialog } from "./Sheet";
@@ -25,7 +24,6 @@ interface AccountDialogProps {
     code: string,
     password: string,
   ) => Promise<void>;
-  readonly onSetTier: (tier: Tier) => Promise<void>;
   readonly onLogout: () => Promise<void>;
 }
 
@@ -36,7 +34,6 @@ export function AccountDialog({
   onLogin,
   onSignUp,
   onConfirm,
-  onSetTier,
   onLogout,
 }: AccountDialogProps) {
   const [mode, setMode] = useState<Mode>("login");
@@ -86,25 +83,8 @@ export function AccountDialog({
       {account.kind === "authenticated" ? (
         <>
           <Text style={styles.email}>{account.email}</Text>
-          <Text style={styles.label}>Tier (debug)</Text>
-          <View style={styles.tiers}>
-            {(["free", "pro"] as const).map((tier) => (
-              <Pressable
-                key={tier}
-                disabled={busy}
-                onPress={() => run(() => onSetTier(tier))}
-                style={[
-                  styles.tierButton,
-                  account.tier === tier && styles.tierButtonActive,
-                ]}
-              >
-                <Text style={styles.tierLabel}>{titleCase(tier)}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <Text style={styles.note}>
-            Temporary tier control pending billing integration.
-          </Text>
+          <Text style={styles.label}>Tier</Text>
+          <Text style={styles.tier}>{titleCase(account.tier)}</Text>
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Pressable disabled={busy} onPress={() => run(onLogout)} style={styles.secondary}>
             <Text style={styles.secondaryText}>Log out</Text>
@@ -199,18 +179,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  tiers: { flexDirection: "row", gap: 8 },
-  tierButton: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 11,
-    borderRadius: radii.field,
-    backgroundColor: colors.surfaceActive,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  tierButtonActive: { backgroundColor: colors.signalSoft, borderColor: colors.signal },
-  tierLabel: { fontFamily: fonts.sansMedium, fontSize: 14, color: colors.text },
+  tier: { fontFamily: fonts.sansMedium, fontSize: 16, color: colors.text },
   primary: {
     minHeight: 50,
     justifyContent: "center",

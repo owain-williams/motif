@@ -9,8 +9,9 @@
  *                                in automation)
  *   5. InitiateAuth           -> USER_PASSWORD_AUTH login, returns JWTs
  *   6. GET /me with IdToken   -> expect the default Free tier
- *   7. PUT /me/tier           -> set and read back the debug Pro tier
- *   8. AdminDeleteUser        -> clean up the throwaway test user
+ *   7. RevenueCat webhook     -> project and read back the Pro tier
+ *   8. cloud relay            -> upload and download an Idea
+ *   9. AdminDeleteUser        -> clean up the throwaway test user
  *
  * Uses the ambient AWS credentials/region. Run: pnpm --filter @motif/infra smoke
  */
@@ -20,6 +21,10 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { DeleteItemCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -52,7 +57,8 @@ async function main(): Promise<void> {
   const apiUrl = out.ApiUrl;
   const userPoolId = out.UserPoolId;
   const clientId = out.UserPoolClientId;
-  assert(apiUrl && userPoolId && clientId, 'missing stack outputs');
+  const revenueCatSecretName = out.RevenueCatWebhookCredentialSecretName;
+  assert(apiUrl && userPoolId && clientId && revenueCatSecretName, 'missing stack outputs');
   console.log(`Region:      ${REGION}`);
   console.log(`API:         ${apiUrl}`);
   console.log(`User pool:   ${userPoolId}`);
@@ -61,6 +67,7 @@ async function main(): Promise<void> {
   const idp = new CognitoIdentityProviderClient({ region: REGION });
   const dynamo = new DynamoDBClient({ region: REGION });
   const s3 = new S3Client({ region: REGION });
+  const secrets = new SecretsManagerClient({ region: REGION });
   const email = `smoke+${Date.now()}@motif.test`;
   const password = `Sm0ke!${Math.random().toString(36).slice(2, 10)}A`;
   const ideaId = `smoke-${Date.now()}`;
@@ -119,21 +126,33 @@ async function main(): Promise<void> {
     assert(body.tier === 'free', `/me defaulted to wrong tier: ${body.tier}`);
     assert(body.cloudStorageBytesUsed === 0, `/me returned unexpected storage usage: ${body.cloudStorageBytesUsed}`);
 
-    // 7. temporary tier assignment path, pending billing integration.
-    const tierUpdate = await fetch(`${apiUrl}/me/tier`, {
-      method: 'PUT',
+    // 7. a credential-authenticated RevenueCat event owns paid Tier changes.
+    const credential = await secrets.send(new GetSecretValueCommand({
+      SecretId: revenueCatSecretName,
+    })).then((result) => result.SecretString);
+    assert(credential, 'RevenueCat webhook credential was empty');
+    const webhook = await fetch(`${apiUrl}/webhooks/revenuecat`, {
+      method: 'POST',
       headers: {
-        authorization: `Bearer ${idToken}`,
+        authorization: credential,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ tier: 'pro' }),
+      body: JSON.stringify({
+        event: {
+          id: `smoke-purchase-${Date.now()}`,
+          type: 'INITIAL_PURCHASE',
+          event_timestamp_ms: Date.now(),
+          app_user_id: accountSub,
+          entitlement_ids: ['pro'],
+        },
+      }),
     });
-    assert(tierUpdate.status === 200, `/me/tier expected 200, got ${tierUpdate.status}`);
+    assert(webhook.status === 200, `RevenueCat webhook expected 200, got ${webhook.status}`);
     const updatedMe = await fetch(`${apiUrl}/me`, {
       headers: { authorization: `Bearer ${idToken}` },
     });
     const updatedBody = (await updatedMe.json()) as { tier?: string };
-    console.log(`PUT tier    -> ${tierUpdate.status}; GET /me -> ${updatedBody.tier}`);
+    console.log(`Webhook     -> ${webhook.status}; GET /me -> ${updatedBody.tier}`);
     assert(updatedBody.tier === 'pro', `tier update was not persisted: ${updatedBody.tier}`);
 
     // 8. relay an Idea through real API + presigned S3 URLs.

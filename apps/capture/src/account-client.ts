@@ -111,15 +111,3 @@ async function accountApi<T>(
 export function loadAccount(idToken: string): Promise<AccountProfile> {
   return accountApi<AccountProfile>("/me", idToken);
 }
-
-export async function setAccountTier(
-  idToken: string,
-  tier: Tier,
-): Promise<AccountProfile> {
-  const result = await accountApi<{ tier: Tier }>("/me/tier", idToken, {
-    method: "PUT",
-    body: JSON.stringify({ tier }),
-  });
-  const profile = await loadAccount(idToken);
-  return { ...profile, tier: result.tier };
-}

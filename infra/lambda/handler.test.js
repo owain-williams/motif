@@ -10,12 +10,32 @@ function event(routeKey, tier, options = {}) {
     routeKey,
     rawPath: options.path ?? routeKey.split(' ')[1],
     pathParameters: options.pathParameters,
+    headers: options.headers,
     body: options.body,
     isBase64Encoded: options.isBase64Encoded,
     requestContext: {
       authorizer: { jwt: { claims: { sub: accountSub, email: 'a@example.com' } } },
     },
     testTier: tier,
+  };
+}
+
+function revenueCatEvent(type, timestamp, options = {}) {
+  return {
+    routeKey: 'POST /webhooks/revenuecat',
+    rawPath: '/webhooks/revenuecat',
+    headers: options.headers ?? { authorization: 'Bearer webhook-secret' },
+    body: JSON.stringify({
+      event: {
+        id: options.id ?? `${type}-${timestamp}`,
+        type,
+        event_timestamp_ms: timestamp,
+        app_user_id: options.appUserId ?? 'account-1',
+        entitlement_ids: options.entitlementIds ?? ['motif_pro'],
+        ...options.event,
+      },
+    }),
+    requestContext: { http: { method: 'POST', path: '/webhooks/revenuecat' } },
   };
 }
 
@@ -64,13 +84,20 @@ async function uploadOffer(handler, tier, offer, options = {}) {
 function fakeServices() {
   const ideas = new Map();
   const audio = new Map();
+  const profiles = new Map();
   const cancelledUploads = [];
   return {
     ideas,
     audio,
+    profiles,
     accounts: {
-      profile: async (_sub, event) => ({ tier: event.testTier }),
-      setTier: async () => {},
+      profile: async (sub, event) => ({ tier: profiles.get(sub)?.tier ?? event.testTier }),
+      projectRevenueCatTier: async (sub, tier, version) => {
+        const current = profiles.get(sub);
+        if (current && current.version >= version) return false;
+        profiles.set(sub, { tier, version });
+        return true;
+      },
     },
     relay: {
       cancelledUploads,
@@ -166,6 +193,113 @@ async function relayLibrary(handler, tier, options = {}) {
   return JSON.parse(response.body).ideas;
 }
 
+test('only the configured RevenueCat credential can project an account Tier', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services, {
+    revenueCatAuthorization: 'Bearer webhook-secret',
+    proEntitlementId: 'motif_pro',
+  });
+
+  for (const headers of [{}, { authorization: 'wrong' }]) {
+    const response = await handler(revenueCatEvent('INITIAL_PURCHASE', 100, { headers }));
+    assert.equal(response.statusCode, 401);
+  }
+
+  assert.equal(services.profiles.size, 0);
+});
+
+test('RevenueCat purchases grant the owning Cognito account immediate relay access', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services, {
+    revenueCatAuthorization: 'Bearer webhook-secret',
+    proEntitlementId: 'motif_pro',
+  });
+
+  const projected = await handler(revenueCatEvent('INITIAL_PURCHASE', 100, {
+    appUserId: 'cognito-owner',
+  }));
+  const relay = await handler(event('GET /relay/manifest', 'free', {
+    accountSub: 'cognito-owner',
+  }));
+
+  assert.equal(projected.statusCode, 200);
+  assert.deepEqual(JSON.parse(projected.body), { accepted: true, tier: 'pro' });
+  assert.equal(services.profiles.get('cognito-owner').tier, 'pro');
+  assert.equal(relay.statusCode, 200);
+});
+
+test('RevenueCat expiration and refund events revoke Pro relay access', async () => {
+  const revocations = [
+    { type: 'EXPIRATION' },
+    { type: 'REFUND' },
+    { type: 'CANCELLATION', event: { expiration_at_ms: 200 } },
+  ];
+  for (const revocation of revocations) {
+    const services = fakeServices();
+    const handler = createHandler(services, {
+      revenueCatAuthorization: 'Bearer webhook-secret',
+      proEntitlementId: 'motif_pro',
+    });
+    await handler(revenueCatEvent('RENEWAL', 100));
+
+    const projected = await handler(revenueCatEvent(revocation.type, 200, {
+      event: revocation.event,
+    }));
+    const relay = await handler(event('GET /relay/manifest', 'pro'));
+
+    assert.deepEqual(JSON.parse(projected.body), { accepted: true, tier: 'free' });
+    assert.equal(relay.statusCode, 403);
+  }
+});
+
+test('cancelling renewal keeps Pro active until RevenueCat reports expiration', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services, {
+    revenueCatAuthorization: 'Bearer webhook-secret',
+    proEntitlementId: 'motif_pro',
+  });
+
+  const projected = await handler(revenueCatEvent('CANCELLATION', 200, {
+    event: { expiration_at_ms: 300 },
+  }));
+  const relay = await handler(event('GET /relay/manifest', 'free'));
+
+  assert.deepEqual(JSON.parse(projected.body), { accepted: true, tier: 'pro' });
+  assert.equal(relay.statusCode, 200);
+});
+
+test('duplicate and out-of-order RevenueCat events cannot overwrite newer Tier state', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services, {
+    revenueCatAuthorization: 'Bearer webhook-secret',
+    proEntitlementId: 'motif_pro',
+  });
+
+  await handler(revenueCatEvent('RENEWAL', 200, { id: 'renewed' }));
+  await handler(revenueCatEvent('EXPIRATION', 300, { id: 'expired' }));
+  const stale = await handler(revenueCatEvent('RENEWAL', 200, { id: 'renewed' }));
+  const duplicate = await handler(revenueCatEvent('EXPIRATION', 300, { id: 'expired' }));
+
+  assert.deepEqual(JSON.parse(stale.body), { accepted: false, tier: 'pro' });
+  assert.deepEqual(JSON.parse(duplicate.body), { accepted: false, tier: 'free' });
+  assert.equal(services.profiles.get('account-1').tier, 'free');
+});
+
+test('RevenueCat anonymous customers cannot be mistaken for Cognito accounts', async () => {
+  const services = fakeServices();
+  const handler = createHandler(services, {
+    revenueCatAuthorization: 'Bearer webhook-secret',
+    proEntitlementId: 'motif_pro',
+  });
+
+  const response = await handler(revenueCatEvent('INITIAL_PURCHASE', 100, {
+    appUserId: '$RCAnonymousID:device-customer',
+  }));
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(services.profiles.size, 0);
+});
+
 test('Free accounts cannot access the cloud relay', async () => {
   const handler = createHandler(fakeServices());
   const response = await handler(event('GET /relay/manifest', 'free'));
@@ -239,25 +373,14 @@ test('completion rechecks quota when concurrent offers were initially allowed', 
   assert.deepEqual(services.relay.cancelledUploads, ['account-1/second']);
 });
 
-test('the debug tier endpoint accepts Free and Pro but refuses the retired Basic', async () => {
+test('authenticated clients cannot assign their own Tier', async () => {
   const handler = createHandler(fakeServices());
 
-  for (const tier of ['free', 'pro']) {
-    const accepted = await handler(event('PUT /me/tier', 'free', {
-      body: JSON.stringify({ tier }),
-    }));
-    assert.equal(accepted.statusCode, 200);
-    assert.deepEqual(JSON.parse(accepted.body), { tier });
-  }
-
-  const refused = await handler(event('PUT /me/tier', 'free', {
-    body: JSON.stringify({ tier: 'basic' }),
+  const response = await handler(event('PUT /me/tier', 'free', {
+    body: JSON.stringify({ tier: 'pro' }),
   }));
-  assert.equal(refused.statusCode, 400);
-  assert.deepEqual(JSON.parse(refused.body), {
-    error: 'invalid_tier',
-    allowed: ['free', 'pro'],
-  });
+
+  assert.equal(response.statusCode, 404);
 });
 
 test('an account still stored as Basic reads as Pro and keeps its cloud relay', async () => {

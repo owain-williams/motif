@@ -11,6 +11,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -82,8 +83,25 @@ export class MotifBackendStack extends Stack {
       autoDeleteObjects: true,
     });
 
+    // RevenueCat sends this exact value in its Authorization header. Keeping
+    // the generated credential in Secrets Manager avoids committing or
+    // synthesizing it in plaintext; retrieve it once when configuring the
+    // RevenueCat webhook.
+    const revenueCatWebhookCredential = new secretsmanager.Secret(
+      this,
+      'RevenueCatWebhookCredential',
+      {
+        secretName: 'motif/revenuecat-webhook-authorization',
+        generateSecretString: {
+          passwordLength: 48,
+          excludePunctuation: true,
+        },
+      },
+    );
+
     // --- Minimal API so the instance is concretely reachable ---
-    // Plain-JS handler, no bundling/deps: /health is open, /me is JWT-guarded.
+    // Plain-JS handler, no bundling/deps: /health and the credential-guarded
+    // RevenueCat webhook are open; account and relay routes are JWT-guarded.
     const apiFn = new lambda.Function(this, 'ApiFn', {
       functionName: 'motif-api',
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -94,6 +112,9 @@ export class MotifBackendStack extends Stack {
       environment: {
         TABLE_NAME: table.tableName,
         AUDIO_BUCKET_NAME: audioBucket.bucketName,
+        REVENUECAT_WEBHOOK_AUTHORIZATION:
+          revenueCatWebhookCredential.secretValue.unsafeUnwrap(),
+        REVENUECAT_PRO_ENTITLEMENT_ID: 'pro',
       },
     });
     table.grant(apiFn,
@@ -137,12 +158,10 @@ export class MotifBackendStack extends Stack {
       integration,
       authorizer,
     });
-    // Temporary debug/admin path until Stripe owns paid-tier changes.
     httpApi.addRoutes({
-      path: '/me/tier',
-      methods: [apigwv2.HttpMethod.PUT],
+      path: '/webhooks/revenuecat',
+      methods: [apigwv2.HttpMethod.POST],
       integration,
-      authorizer,
     });
     httpApi.addRoutes({
       path: '/relay/manifest',
@@ -195,5 +214,8 @@ export class MotifBackendStack extends Stack {
     new CfnOutput(this, 'ApiUrl', { value: httpApi.apiEndpoint });
     new CfnOutput(this, 'BucketName', { value: audioBucket.bucketName });
     new CfnOutput(this, 'TableName', { value: table.tableName });
+    new CfnOutput(this, 'RevenueCatWebhookCredentialSecretName', {
+      value: revenueCatWebhookCredential.secretName,
+    });
   }
 }
