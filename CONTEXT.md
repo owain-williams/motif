@@ -28,6 +28,10 @@ _Avoid_: Category, label
 Where an Idea was captured — coordinates plus a user-editable place label. Captured automatically only when the user has turned on location tagging in settings (off by default); always viewable, editable, and removable afterward regardless of that setting.
 _Avoid_: Geotag, GPS
 
+**Star**:
+A mark a user puts on an Idea in Bridge to keep it to hand while working — "the one I'm on today". Deliberately not Idea metadata: a Star lives only on the Bridge that set it, never syncs to Capture, and takes no part in per-field merges (see ADR 0006). It is a property of the desk, not of the Idea, which is why it is absent from the Tiers table and from the sync protocol entirely.
+_Avoid_: Favourite, pin, flag
+
 **Recently Deleted**:
 Where a deleted Idea goes for 30 days before being purged for good, audio and metadata intact and restorable. Deleting always asks for confirmation, then moves the Idea out of the active Library on every paired device — propagation to a device that's offline at the time happens whenever it's next reachable, however long that takes (see ADR 0005). Restoring is only guaranteed to work while at least one paired device still holds the Idea within its own 30-day window.
 _Avoid_: Trash, Bin

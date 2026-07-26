@@ -1,455 +1,288 @@
-import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
+import "@fontsource/geist-sans/400.css";
+import "@fontsource/geist-sans/500.css";
+import "@fontsource/geist-sans/600.css";
+import "@fontsource/geist-mono/400.css";
+import "@fontsource/instrument-serif/400.css";
+
 import {
-  distinctFieldValues,
-  formatCoordinates,
-  formatDuration,
-  formatRestoreWindow,
-  ideaMetadataLabels,
+  normalizeIdeaName,
   normalizeMultiValue,
   normalizeTempo,
-  RECENTLY_DELETED_RETENTION_DAYS,
-  searchLibrary,
 } from "@motif/shared";
 import type {
-  IdeaLocation,
+  IdeaFacetKind,
   IdeaMetadata,
   IdeaMetadataEdit,
-  MultiValueIdeaField,
-  RecentlyDeletedIdea,
 } from "@motif/shared";
+import {
+  bridge,
+  convertFileSrc,
+  revealItemInDir,
+  startNativeDrag,
+} from "./bridge-api.js";
+import { need } from "./dom.js";
+import { renderInspector, renderProgress } from "./inspector-view.js";
+import { renderRows, renderSidebar } from "./library-view.js";
+import { PAIRING_STEPS, renderPairing } from "./pairing-view.js";
+import { createState, selectedIdea } from "./state.js";
+import type { Actions, AppState, ComposerField, LibraryFilter } from "./state.js";
+import { hasOnboarded, loadStarred, markOnboarded, saveStarred } from "./starred.js";
 
 /**
- * Bridge frontend shell. Renders synced Ideas, previews their received audio,
- * and asks the Rust core for a DAW-ready file when one is dragged out. Native
- * drag/drop is delegated to tauri-plugin-drag so another desktop app receives
- * an actual file rather than browser drag data.
+ * Bridge's window: state, the render pass, and the wiring between the two.
+ *
+ * The Rust core is authoritative — it holds the Library, the pairing and the
+ * deletions, and it is polled rather than pushed to. Everything here is a view
+ * of that, plus the transient bits a window owns: what is selected, what is
+ * playing, and what the user is part-way through typing.
  */
 
-interface PairingInfo {
-  readonly code: string;
-  readonly expiresAt: number;
-  readonly lockedUntil: number | null;
-}
-
 const REFRESH_MS = 3000;
+const PAIRING_TICK_MS = 1000;
+const STATUS_CLEAR_MS = 4000;
+const DRAG_RESET_MS = 2500;
 const COGNITO_URL = "https://cognito-idp.eu-west-2.amazonaws.com/";
 const CLIENT_ID = "158crbvjn6ss89plph8p8ivo96";
 const API_URL = "https://to8jymiybd.execute-api.eu-west-2.amazonaws.com";
 const DRAG_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAAAKUlEQVR4nO3OMQEAAAgDINc/9K3hHFQgE1mZmZmZmZmZmZmZmZmZmZk9uwFmhQJBsT+YVAAAAABJRU5ErkJggg==";
-let selectedIdeaId: string | null = null;
-let loadedLibrary: IdeaMetadata[] = [];
-let deletedIdeas: RecentlyDeletedIdea[] = [];
-let searchQuery = "";
-// The Idea the delete confirmation is open for, or null when it's closed.
-let deleteTargetId: string | null = null;
-// The Idea whose metadata is open in the editor, or null when it's closed.
-let metadataTargetId: string | null = null;
-// The working location tag for the open editor: its coordinates stay fixed (Bridge
-// has no GPS), only the label is edited; `null` once removed or when untagged.
-let metadataLocation: IdeaLocation | null = null;
 
-async function loadPairingInfo(): Promise<void> {
-  const el = document.querySelector<HTMLParagraphElement>("#pairing");
-  if (!el) return;
-  try {
-    const info = await invoke<PairingInfo>("pairing_info");
-    const now = Math.floor(Date.now() / 1000);
-    if (info.lockedUntil !== null && info.lockedUntil > now) {
-      el.textContent = `Pairing locked · try again in ${info.lockedUntil - now}s`;
-      return;
-    }
-    const remaining = Math.max(0, info.expiresAt - now);
-    const minutes = Math.floor(remaining / 60);
-    const seconds = String(remaining % 60).padStart(2, "0");
-    el.textContent = `Pair a phone · code ${info.code} · refreshes in ${minutes}:${seconds}`;
-  } catch {
-    el.textContent = "Sync receiver unavailable";
-  }
+const state: AppState = createState(loadStarred());
+let statusTimer: number | undefined;
+let dragTimer: number | undefined;
+
+function player(): HTMLAudioElement {
+  return need<HTMLAudioElement>("#player");
 }
 
-async function previewIdea(idea: IdeaMetadata): Promise<void> {
-  const preview = document.querySelector<HTMLElement>("#preview");
-  const name = document.querySelector<HTMLElement>("#preview-name");
-  const player = document.querySelector<HTMLAudioElement>("#player");
-  if (!preview || !name || !player) return;
-
-  try {
-    const path = await invoke<string>("preview_audio_path", { id: idea.id });
-    selectedIdeaId = idea.id;
-    name.textContent = idea.name;
-    player.src = convertFileSrc(path);
-    preview.hidden = false;
-    player.load();
-    void player.play().catch(() => {
-      // Controls remain available when the webview declines autoplay.
-    });
-    document.querySelector(`[data-idea-id="${CSS.escape(idea.id)}"]`)?.classList.add("selected");
-  } catch {
-    setHandoffStatus("That Idea's audio could not be previewed.", true);
+function render(): void {
+  need<HTMLElement>("#pair").hidden = state.screen !== "pair";
+  need<HTMLElement>("#app").hidden = state.screen !== "app";
+  if (state.screen === "pair") {
+    renderPairing(state);
+    return;
   }
+  renderSidebar(state, actions);
+  renderRows(state, actions);
+  renderInspector(state, actions);
 }
 
-/** Stops and hides the preview panel, e.g. once its Idea leaves the Library. */
-function stopPreview(): void {
-  const preview = document.querySelector<HTMLElement>("#preview");
-  const player = document.querySelector<HTMLAudioElement>("#player");
-  selectedIdeaId = null;
-  if (player) {
-    player.pause();
-    player.removeAttribute("src");
-    player.load();
-  }
-  if (preview) preview.hidden = true;
-}
-
-function setHandoffStatus(message: string, isError = false): void {
-  const status = document.querySelector<HTMLParagraphElement>("#handoff-status");
-  if (!status) return;
+function setStatus(message: string, isError = false): void {
+  const status = need<HTMLElement>("#status");
   status.textContent = message;
   status.classList.toggle("error", isError);
+  window.clearTimeout(statusTimer);
+  if (message.length === 0) return;
+  statusTimer = window.setTimeout(() => {
+    status.textContent = "";
+    status.classList.remove("error");
+  }, STATUS_CLEAR_MS);
 }
 
-async function startIdeaDrag(idea: IdeaMetadata): Promise<void> {
-  setHandoffStatus(
-    idea.audioFormat === "aac" ? "Preparing WAV for drag…" : "Preparing drag…",
-  );
+/* Loading ------------------------------------------------------------------ */
+
+/**
+ * Pulls the Library and deletions from the core. A selected or playing Idea that
+ * has left the Library — deleted here, or on the phone and merged in since —
+ * stops being either, so the window never holds on to something that is gone.
+ */
+async function refreshLibrary(): Promise<void> {
   try {
-    const path = await invoke<string>("prepare_handoff", { id: idea.id });
-    const onEvent = new Channel<unknown>();
-    onEvent.onmessage = () => setHandoffStatus("");
-    await invoke("plugin:drag|start_drag", {
-      item: [path],
-      image: DRAG_ICON,
-      options: { mode: "copy" },
-      onEvent,
-    });
-  } catch (error) {
-    setHandoffStatus(`Could not prepare this Idea for drag: ${String(error)}`, true);
+    const [library, deleted] = await Promise.all([
+      bridge.library(),
+      bridge.recentlyDeleted(),
+    ]);
+    state.library = library;
+    state.deleted = deleted;
+
+    const held = new Set(library.map((idea) => idea.id));
+    if (state.selectedId !== null && !held.has(state.selectedId)) {
+      state.selectedId = null;
+      state.deleteArmed = false;
+      state.composerField = null;
+    }
+    if (state.playingId !== null && !held.has(state.playingId)) stopPlayback();
+    render();
+  } catch {
+    // A transient command failure just means the last render stands.
   }
 }
 
-function renderLibrary(ideas: readonly IdeaMetadata[]): void {
-  const list = document.querySelector<HTMLUListElement>("#library");
-  const empty = document.querySelector<HTMLParagraphElement>("#empty");
-  if (!list || !empty) return;
-  empty.hidden = ideas.length > 0;
-  empty.textContent =
-    loadedLibrary.length > 0 && searchQuery.trim().length > 0
-      ? "No Ideas match your search."
-      : "Waiting for an Idea to sync from your phone…";
-  list.replaceChildren(
-    ...ideas.map((idea) => {
-      const row = document.createElement("li");
-      row.className = "library-row";
-      row.dataset.ideaId = idea.id;
-      row.classList.toggle("selected", idea.id === selectedIdeaId);
-      row.tabIndex = 0;
-      row.setAttribute("role", "button");
-      row.setAttribute("aria-label", `Preview ${idea.name}`);
-
-      const name = document.createElement("span");
-      name.className = "idea-name";
-      name.textContent = idea.name;
-
-      const duration = document.createElement("span");
-      duration.className = "idea-duration";
-      duration.textContent = formatDuration(idea.durationMs);
-
-      const edit = document.createElement("button");
-      edit.className = "edit-handle";
-      edit.type = "button";
-      edit.title = "Edit tags, instrument, style, tempo, location";
-      edit.setAttribute("aria-label", `Edit metadata for ${idea.name}`);
-      edit.textContent = "Edit";
-      edit.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openMetadataEditor(idea.id);
-      });
-
-      const remove = document.createElement("button");
-      remove.className = "delete-handle";
-      remove.type = "button";
-      remove.title = "Delete on this Bridge and your paired phone";
-      remove.setAttribute("aria-label", `Delete ${idea.name}`);
-      remove.textContent = "Delete";
-      remove.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openDeleteConfirmation(idea.id);
-      });
-
-      const drag = document.createElement("button");
-      drag.className = "drag-handle";
-      drag.type = "button";
-      drag.title = "Drag WAV to your DAW";
-      drag.setAttribute("aria-label", `Drag ${idea.name} to another app`);
-      drag.textContent = "Drag WAV";
-      drag.addEventListener("mousedown", (event) => {
-        if (event.button !== 0) return;
-        event.stopPropagation();
-        void startIdeaDrag(idea);
-      });
-      drag.addEventListener("click", (event) => event.stopPropagation());
-
-      row.addEventListener("click", () => void previewIdea(idea));
-      row.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          void previewIdea(idea);
-        }
-      });
-      row.append(name, duration, edit, remove, drag);
-
-      const chips = metadataChips(idea);
-      if (chips) row.append(chips);
-      return row;
-    }),
-  );
-}
-
-/**
- * Recently Deleted: the Ideas this Bridge has deleted but still holds, each
- * restorable until its window runs out (CONTEXT.md, ADR 0005). Hidden entirely
- * when nothing is deleted, so it stays out of the way. `now` is read once per
- * render rather than per row, so every window is measured against one instant.
- */
-function renderRecentlyDeleted(): void {
-  const section = document.querySelector<HTMLElement>(
-    "#recently-deleted-section",
-  );
-  const list = document.querySelector<HTMLUListElement>("#recently-deleted");
-  const hint = document.querySelector<HTMLParagraphElement>(
-    "#recently-deleted-hint",
-  );
-  if (!section || !list || !hint) return;
-
-  section.hidden = deletedIdeas.length === 0;
-  hint.textContent = `Deleted Ideas stay here for ${RECENTLY_DELETED_RETENTION_DAYS} days before they go for good.`;
-  const now = Date.now();
-  list.replaceChildren(
-    ...deletedIdeas.map((entry) => {
-      const row = document.createElement("li");
-      row.className = "library-row deleted-row";
-
-      const name = document.createElement("span");
-      name.className = "idea-name";
-      name.textContent = entry.idea.name;
-
-      const duration = document.createElement("span");
-      duration.className = "idea-duration";
-      duration.textContent = `${formatDuration(entry.idea.durationMs)} · ${formatRestoreWindow(entry.purgeAt, now)}`;
-
-      const restore = document.createElement("button");
-      restore.className = "restore-handle";
-      restore.type = "button";
-      restore.title = "Put this Idea back in the Library, here and on your phone";
-      restore.setAttribute("aria-label", `Restore ${entry.idea.name}`);
-      restore.textContent = "Restore";
-      restore.addEventListener("click", () => void restoreIdea(entry.idea.id));
-
-      row.append(name, duration, restore);
-      return row;
-    }),
-  );
-}
-
-function openDeleteConfirmation(id: string): void {
-  const idea = loadedLibrary.find((entry) => entry.id === id);
-  const backdrop = document.querySelector<HTMLDivElement>("#delete-backdrop");
-  const message = document.querySelector<HTMLElement>("#delete-message");
-  if (!idea || !backdrop || !message) return;
-  deleteTargetId = id;
-  message.textContent = `"${idea.name}" moves to Recently Deleted here, and on your paired phone when it's next reachable. You can restore it for ${RECENTLY_DELETED_RETENTION_DAYS} days.`;
-  backdrop.hidden = false;
-  document.querySelector<HTMLButtonElement>("#delete-cancel")?.focus();
-}
-
-function closeDeleteConfirmation(): void {
-  deleteTargetId = null;
-  const backdrop = document.querySelector<HTMLDivElement>("#delete-backdrop");
-  if (backdrop) backdrop.hidden = true;
-}
-
-/**
- * Soft-deletes the confirmed Idea; its audio stays for the grace period. The
- * refresh is what takes it out of the Library and stops its preview, so a
- * delete made here and one arriving from the phone land the same way.
- */
-async function confirmDelete(): Promise<void> {
-  const id = deleteTargetId;
-  closeDeleteConfirmation();
-  if (!id) return;
+async function refreshPairing(): Promise<void> {
   try {
-    await invoke("delete_idea", { id });
-    await refreshLibrary();
-  } catch (error) {
-    setHandoffStatus(`Could not delete that Idea: ${String(error)}`, true);
+    state.pairing = await bridge.pairingInfo();
+  } catch {
+    state.pairing = null;
   }
-}
-
-/** Brings a deleted Idea back; Capture picks the restore up on its next sync. */
-async function restoreIdea(id: string): Promise<void> {
   try {
-    await invoke("restore_idea", { id });
-    await refreshLibrary();
-  } catch (error) {
-    setHandoffStatus(`Could not restore that Idea: ${String(error)}`, true);
+    state.device = await bridge.pairedDevice();
+  } catch {
+    state.device = null;
   }
+  render();
 }
 
-const MULTI_FIELDS: readonly MultiValueIdeaField[] = [
-  "tags",
-  "instrument",
-  "style",
-];
+/* Playback ----------------------------------------------------------------- */
 
-/** A compact summary of an Idea's searchable metadata, or null when it has none. */
-function metadataChips(idea: IdeaMetadata): HTMLElement | null {
-  const labels = ideaMetadataLabels(idea);
-  if (labels.length === 0) return null;
-  const wrap = document.createElement("div");
-  wrap.className = "library-chips";
-  wrap.append(
-    ...labels.map((label) => {
-      const chip = document.createElement("span");
-      chip.className = "library-chip";
-      chip.textContent = label;
-      return chip;
-    }),
-  );
-  return wrap;
+function stopPlayback(): void {
+  const audio = player();
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  state.playingId = null;
+  state.progress = 0;
 }
 
-function fieldInput(field: string): HTMLInputElement | null {
-  return document.querySelector<HTMLInputElement>(`#edit-${field}`);
-}
-
-function readMultiValueInput(field: MultiValueIdeaField): string[] {
-  return normalizeMultiValue((fieldInput(field)?.value ?? "").split(","));
-}
-
-/**
- * Renders the distinct values already used across the Library as clickable
- * suggestions for one field, hiding ones already entered — the same
- * autocomplete-from-distinct-values approach Capture uses (CONTEXT.md).
- */
-function renderFieldSuggestions(field: MultiValueIdeaField): void {
-  const container = document.querySelector<HTMLDivElement>(
-    `#edit-${field}-suggestions`,
-  );
-  const input = fieldInput(field);
-  if (!container || !input) return;
-  const chosen = new Set(
-    readMultiValueInput(field).map((value) => value.toLocaleLowerCase()),
-  );
-  const suggestions = distinctFieldValues(loadedLibrary, field).filter(
-    (value) => !chosen.has(value.toLocaleLowerCase()),
-  );
-  container.replaceChildren(
-    ...suggestions.map((value) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "metadata-suggestion";
-      chip.textContent = value;
-      chip.addEventListener("click", () => {
-        input.value = normalizeMultiValue([
-          ...readMultiValueInput(field),
-          value,
-        ]).join(", ");
-        renderFieldSuggestions(field);
-      });
-      return chip;
-    }),
-  );
-}
-
-function openMetadataEditor(id: string): void {
-  const idea = loadedLibrary.find((entry) => entry.id === id);
-  const backdrop = document.querySelector<HTMLDivElement>("#metadata-backdrop");
-  if (!idea || !backdrop) return;
-  metadataTargetId = id;
-  const nameEl = document.querySelector<HTMLElement>("#metadata-idea-name");
-  if (nameEl) nameEl.textContent = idea.name;
-  const values: Record<string, string> = {
-    tags: idea.tags.join(", "),
-    instrument: idea.instrument.join(", "),
-    style: idea.style.join(", "),
-    tempo: idea.tempo === null ? "" : String(idea.tempo),
-  };
-  for (const [field, value] of Object.entries(values)) {
-    const input = fieldInput(field);
-    if (input) input.value = value;
-  }
-  MULTI_FIELDS.forEach(renderFieldSuggestions);
-  metadataLocation = idea.location;
-  renderLocationField();
-  backdrop.hidden = false;
-  fieldInput("tags")?.focus();
-}
-
-/**
- * Shows the location editor only when the Idea carries a location tag (Bridge has no
- * GPS, so it can relabel or remove a location but never add one). The label
- * input is editable; the coordinates are shown read-only beside a Remove button.
- */
-function renderLocationField(): void {
-  const group = document.querySelector<HTMLDivElement>("#edit-location-group");
-  const labelInput = document.querySelector<HTMLInputElement>("#edit-location-label");
-  const coords = document.querySelector<HTMLElement>("#edit-location-coords");
-  if (!group || !labelInput || !coords) return;
-  if (metadataLocation === null) {
-    group.hidden = true;
+async function togglePlay(id: string): Promise<void> {
+  if (state.playingId === id) {
+    stopPlayback();
+    render();
     return;
   }
-  group.hidden = false;
-  labelInput.value = metadataLocation.label;
-  coords.textContent = formatCoordinates(metadataLocation);
-}
-
-function closeMetadataEditor(): void {
-  metadataTargetId = null;
-  const backdrop = document.querySelector<HTMLDivElement>("#metadata-backdrop");
-  if (backdrop) backdrop.hidden = true;
-}
-
-async function submitMetadataEditor(): Promise<void> {
-  const id = metadataTargetId;
-  const idea = loadedLibrary.find((entry) => entry.id === id);
-  if (!id || !idea) {
-    closeMetadataEditor();
-    return;
-  }
-  const labelInput = document.querySelector<HTMLInputElement>("#edit-location-label");
-  const edit: IdeaMetadataEdit = {
-    // Name isn't edited on Bridge; send the current value so it never re-stamps.
-    name: idea.name,
-    tags: readMultiValueInput("tags"),
-    instrument: readMultiValueInput("instrument"),
-    style: readMultiValueInput("style"),
-    tempo: normalizeTempo(fieldInput("tempo")?.value ?? ""),
-    // Send the desired location tag: the fixed coordinates plus the (possibly edited)
-    // label, or null when removed/untagged. An unchanged value never re-stamps.
-    location:
-      metadataLocation === null
-        ? null
-        : { ...metadataLocation, label: (labelInput?.value ?? "").trim() },
-  };
-  closeMetadataEditor();
+  state.selectedId = id;
+  state.deleteArmed = false;
   try {
-    await invoke("edit_idea", { id, edit });
-    // Reflect the edit locally right away; Capture picks it up on its next sync.
+    const path = await bridge.audioPath(id);
+    const audio = player();
+    audio.src = convertFileSrc(path);
+    audio.load();
+    state.playingId = id;
+    state.progress = 0;
+    render();
+    await audio.play();
+  } catch {
+    stopPlayback();
+    render();
+    setStatus("That Idea's audio could not be played.", true);
+  }
+}
+
+/* Editing ------------------------------------------------------------------ */
+
+/** Applies an edit to the selected Idea and re-reads the Library it changed. */
+async function applyEdit(id: string, edit: IdeaMetadataEdit): Promise<void> {
+  try {
+    await bridge.editIdea(id, edit);
     await refreshLibrary();
   } catch (error) {
-    setHandoffStatus(`Could not save that Idea's metadata: ${String(error)}`, true);
+    setStatus(`Could not save that change: ${String(error)}`, true);
   }
 }
 
-async function loginForCloud(email: string, password: string): Promise<void> {
-  const status = document.querySelector<HTMLParagraphElement>("#cloud-status");
-  const form = document.querySelector<HTMLFormElement>("#cloud-login");
-  const logout = document.querySelector<HTMLButtonElement>("#cloud-logout");
-  if (!status || !form || !logout) return;
-  status.textContent = "Logging in…";
+function withoutValue(
+  values: readonly string[],
+  value: string,
+): string[] {
+  const dropped = value.toLocaleLowerCase();
+  return values.filter(
+    (candidate) => candidate.toLocaleLowerCase() !== dropped,
+  );
+}
+
+function removeMetadata(
+  idea: IdeaMetadata,
+  kind: IdeaFacetKind,
+  value: string,
+): IdeaMetadataEdit {
+  if (kind === "tempo") return { tempo: null };
+  if (kind === "location") return { location: null };
+  return { [kind]: withoutValue(idea[kind], value) };
+}
+
+function addMetadata(
+  idea: IdeaMetadata,
+  field: ComposerField,
+  raw: string,
+): IdeaMetadataEdit | null {
+  if (field === "tempo") {
+    const tempo = normalizeTempo(raw);
+    return tempo === null ? null : { tempo };
+  }
+  const values = normalizeMultiValue([...idea[field], raw]);
+  return values.length === idea[field].length ? null : { [field]: values };
+}
+
+/* Actions ------------------------------------------------------------------ */
+
+const actions: Actions = {
+  selectIdea(id) {
+    if (state.selectedId === id) return;
+    state.selectedId = id;
+    state.deleteArmed = false;
+    state.dragDone = false;
+    state.composerField = null;
+    render();
+  },
+  togglePlay(id) {
+    void togglePlay(id);
+  },
+  toggleStar(id) {
+    if (state.starred.has(id)) state.starred.delete(id);
+    else state.starred.add(id);
+    saveStarred(state.starred);
+    render();
+  },
+  restoreIdea(id) {
+    void (async () => {
+      try {
+        await bridge.restoreIdea(id);
+        await refreshLibrary();
+        setStatus("Restored to the Library.");
+      } catch (error) {
+        setStatus(`Could not restore that Idea: ${String(error)}`, true);
+      }
+    })();
+  },
+  setFilter(filter: LibraryFilter) {
+    state.filter = filter;
+    render();
+  },
+  clearFilters() {
+    state.query = "";
+    state.filter = { kind: "all" };
+    need<HTMLInputElement>("#search").value = "";
+    render();
+  },
+  removeMetadata(kind, value) {
+    const idea = selectedIdea(state);
+    if (idea === null) return;
+    void applyEdit(idea.id, removeMetadata(idea, kind, value));
+  },
+  openComposer(field) {
+    state.composerField = field;
+    render();
+    const input = need<HTMLInputElement>("#composer-input");
+    input.value = "";
+    input.focus();
+  },
+  closeComposer() {
+    state.composerField = null;
+    render();
+  },
+  addMetadata(value) {
+    const idea = selectedIdea(state);
+    const field = state.composerField;
+    if (idea === null || field === null) return;
+    const edit = addMetadata(idea, field, value);
+    need<HTMLInputElement>("#composer-input").value = "";
+    if (edit === null) return;
+    void applyEdit(idea.id, edit);
+  },
+};
+
+/* Cloud relay -------------------------------------------------------------- */
+
+/**
+ * Signs in for the Pro cloud relay. The relay is additive to LAN sync — it is
+ * what lets an Idea arrive when the phone is nowhere near this network — so a
+ * failed sign-in leaves Bridge working exactly as it did.
+ */
+async function signIn(email: string, password: string): Promise<void> {
+  const error = need<HTMLElement>("#signin-error");
+  const submit = need<HTMLButtonElement>("#signin-submit");
+  error.hidden = true;
+  submit.disabled = true;
+  submit.textContent = "Signing in…";
 
   try {
     const response = await fetch(COGNITO_URL, {
@@ -472,7 +305,7 @@ async function loginForCloud(email: string, password: string): Promise<void> {
       message?: string;
     };
     const idToken = result.AuthenticationResult?.IdToken;
-    if (!response.ok || !idToken) throw new Error(result.message ?? "Login failed");
+    if (!response.ok || !idToken) throw new Error(result.message ?? "Sign-in failed");
 
     const profileResponse = await fetch(`${API_URL}/me`, {
       headers: { Authorization: `Bearer ${idToken}` },
@@ -482,94 +315,267 @@ async function loginForCloud(email: string, password: string): Promise<void> {
       throw new Error("Cloud relay requires a Pro account.");
     }
 
-    await invoke("enable_cloud_sync", { idToken });
-    status.textContent = "Pro cloud relay connected";
-    form.hidden = true;
-    logout.hidden = false;
-  } catch (error) {
-    status.textContent = error instanceof Error ? error.message : "Cloud login failed";
+    await bridge.enableCloudSync(idToken);
+    state.relayEmail = email.trim().toLowerCase();
+    closeSignIn();
+    render();
+    setStatus("Cloud relay connected.");
+  } catch (caught) {
+    error.textContent =
+      caught instanceof Error ? caught.message : "Cloud sign-in failed";
+    error.hidden = false;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Sign in";
   }
 }
 
-async function refreshLibrary(): Promise<void> {
-  try {
-    loadedLibrary = await invoke<IdeaMetadata[]>("library");
-    deletedIdeas =
-      await invoke<RecentlyDeletedIdea[]>("recently_deleted");
-    // The preview follows the active Library: an Idea deleted here or on the
-    // phone stops playing rather than outliving its row.
-    if (
-      selectedIdeaId !== null &&
-      !loadedLibrary.some((idea) => idea.id === selectedIdeaId)
-    ) {
-      stopPreview();
-    }
-    renderLibrary(searchLibrary(loadedLibrary, searchQuery));
-    renderRecentlyDeleted();
-  } catch {
-    // A transient command failure just means we keep the last render.
+function openSignIn(): void {
+  need<HTMLElement>("#signin-backdrop").hidden = false;
+  need<HTMLElement>("#signin-error").hidden = true;
+  need<HTMLInputElement>("#signin-email").focus();
+}
+
+function closeSignIn(): void {
+  need<HTMLElement>("#signin-backdrop").hidden = true;
+  need<HTMLFormElement>("#signin-form").reset();
+}
+
+/** Signs in when local-only, signs out when connected. */
+function toggleRelay(): void {
+  if (state.relayEmail === null) {
+    openSignIn();
+    return;
   }
+  void bridge.disableCloudSync();
+  state.relayEmail = null;
+  render();
+  setStatus("Cloud relay disconnected. Local sync is unaffected.");
+}
+
+/* Handoff ------------------------------------------------------------------ */
+
+/**
+ * Prepares the selected Idea for a DAW and hands it to the OS as a native drag.
+ * An AAC Idea is decoded to WAV first, which is why this starts on mousedown —
+ * the file has to exist before the drag does.
+ */
+async function startDrag(idea: IdeaMetadata): Promise<void> {
+  setStatus(
+    idea.audioFormat === "aac" ? "Preparing WAV…" : "Preparing drag…",
+  );
+  try {
+    const path = await bridge.prepareHandoff(idea.id);
+    setStatus("");
+    await startNativeDrag(path, DRAG_ICON, () => {
+      state.dragDone = true;
+      render();
+      window.clearTimeout(dragTimer);
+      dragTimer = window.setTimeout(() => {
+        state.dragDone = false;
+        render();
+      }, DRAG_RESET_MS);
+    });
+  } catch (error) {
+    setStatus(`Could not prepare this Idea for drag: ${String(error)}`, true);
+  }
+}
+
+async function reveal(path: string): Promise<void> {
+  try {
+    await revealItemInDir(path);
+  } catch {
+    setStatus("Could not open that folder.", true);
+  }
+}
+
+/* Wiring ------------------------------------------------------------------- */
+
+function goToApp(): void {
+  markOnboarded();
+  state.screen = "app";
+  render();
+}
+
+function wirePairing(): void {
+  need("#pair-next").addEventListener("click", () => {
+    if (state.step < PAIRING_STEPS.length - 1) {
+      state.step += 1;
+      render();
+      return;
+    }
+    goToApp();
+  });
+  need("#pair-skip").addEventListener("click", goToApp);
+  need("#ideas-dir-reveal").addEventListener("click", () => {
+    void reveal(state.ideasDir);
+  });
+  need("#pair-relay").addEventListener("click", toggleRelay);
+  need("#pair-another").addEventListener("click", () => {
+    // Straight to the code: the phone is already set up, this is a second one.
+    state.screen = "pair";
+    state.step = 1;
+    render();
+  });
+}
+
+function wireLibrary(): void {
+  const search = need<HTMLInputElement>("#search");
+  search.addEventListener("input", () => {
+    state.query = search.value;
+    render();
+  });
+  need("#search-clear").addEventListener("click", () => {
+    state.query = "";
+    search.value = "";
+    search.focus();
+    render();
+  });
+  need("#sort").addEventListener("click", () => {
+    state.sort = state.sort === "newest" ? "longest" : "newest";
+    render();
+  });
+  need("#empty-clear").addEventListener("click", () => actions.clearFilters());
+  need("#relay-action").addEventListener("click", toggleRelay);
+}
+
+function wireInspector(): void {
+  const name = need<HTMLInputElement>("#name");
+  name.addEventListener("change", () => {
+    const idea = selectedIdea(state);
+    if (idea === null) return;
+    const renamed = normalizeIdeaName(name.value);
+    // A blank name is not a rename; put the existing one back.
+    if (renamed === null || renamed === idea.name) {
+      name.value = idea.name;
+      return;
+    }
+    void applyEdit(idea.id, { name: renamed });
+  });
+  name.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") name.blur();
+    if (event.key === "Escape") {
+      name.value = selectedIdea(state)?.name ?? "";
+      name.blur();
+    }
+  });
+
+  need("#play").addEventListener("click", () => {
+    if (state.selectedId !== null) void togglePlay(state.selectedId);
+  });
+
+  const composerInput = need<HTMLInputElement>("#composer-input");
+  composerInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      actions.closeComposer();
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const value = composerInput.value.trim();
+    if (value.length > 0) actions.addMetadata(value);
+  });
+
+  need("#drag").addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    const idea = selectedIdea(state);
+    if (idea !== null) void startDrag(idea);
+  });
+
+  need("#reveal").addEventListener("click", () => {
+    const id = state.selectedId;
+    if (id === null) return;
+    void (async () => {
+      try {
+        await reveal(await bridge.audioPath(id));
+      } catch {
+        setStatus("That Idea's audio is missing.", true);
+      }
+    })();
+  });
+
+  need("#delete").addEventListener("click", () => {
+    const idea = selectedIdea(state);
+    if (idea === null) return;
+    if (!state.deleteArmed) {
+      state.deleteArmed = true;
+      render();
+      return;
+    }
+    state.deleteArmed = false;
+    void (async () => {
+      try {
+        await bridge.deleteIdea(idea.id);
+        await refreshLibrary();
+        setStatus("Moved to Recently Deleted.");
+      } catch (error) {
+        setStatus(`Could not delete that Idea: ${String(error)}`, true);
+      }
+    })();
+  });
+}
+
+function wireSignIn(): void {
+  need<HTMLFormElement>("#signin-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void signIn(
+      need<HTMLInputElement>("#signin-email").value,
+      need<HTMLInputElement>("#signin-password").value,
+    );
+  });
+  need("#signin-cancel").addEventListener("click", closeSignIn);
+  need("#signin-backdrop").addEventListener("click", (event) => {
+    // A click on the backdrop itself, not the dialog, dismisses it.
+    if (event.target === event.currentTarget) closeSignIn();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!need<HTMLElement>("#signin-backdrop").hidden) closeSignIn();
+  });
+}
+
+function wirePlayer(): void {
+  const audio = player();
+  audio.addEventListener("timeupdate", () => {
+    if (state.playingId === null) return;
+    const total = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : (selectedIdea(state)?.durationMs ?? 0) / 1000;
+    state.progress = total > 0 ? Math.min(1, audio.currentTime / total) : 0;
+    renderProgress(state);
+  });
+  audio.addEventListener("ended", () => {
+    stopPlayback();
+    render();
+  });
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  document.querySelector<HTMLInputElement>("#library-search")?.addEventListener("input", (event) => {
-    searchQuery = (event.currentTarget as HTMLInputElement).value;
-    renderLibrary(searchLibrary(loadedLibrary, searchQuery));
-  });
-  document.querySelector<HTMLFormElement>("#cloud-login")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const email = document.querySelector<HTMLInputElement>("#cloud-email")?.value ?? "";
-    const password = document.querySelector<HTMLInputElement>("#cloud-password")?.value ?? "";
-    void loginForCloud(email, password);
-  });
-  document.querySelector<HTMLFormElement>("#metadata-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void submitMetadataEditor();
-  });
-  document
-    .querySelector<HTMLButtonElement>("#metadata-cancel")
-    ?.addEventListener("click", () => closeMetadataEditor());
-  document.querySelector<HTMLFormElement>("#delete-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void confirmDelete();
-  });
-  document
-    .querySelector<HTMLButtonElement>("#delete-cancel")
-    ?.addEventListener("click", () => closeDeleteConfirmation());
-  document
-    .querySelector<HTMLDivElement>("#delete-backdrop")
-    ?.addEventListener("click", (event) => {
-      // A click on the backdrop itself (not the form) cancels the delete.
-      if (event.target === event.currentTarget) closeDeleteConfirmation();
-    });
-  document
-    .querySelector<HTMLButtonElement>("#edit-location-remove")
-    ?.addEventListener("click", () => {
-      metadataLocation = null;
-      renderLocationField();
-    });
-  document
-    .querySelector<HTMLDivElement>("#metadata-backdrop")
-    ?.addEventListener("click", (event) => {
-      // A click on the backdrop itself (not the form) dismisses the editor.
-      if (event.target === event.currentTarget) closeMetadataEditor();
-    });
-  for (const field of MULTI_FIELDS) {
-    fieldInput(field)?.addEventListener("input", () =>
-      renderFieldSuggestions(field),
-    );
-  }
-  document.querySelector<HTMLButtonElement>("#cloud-logout")?.addEventListener("click", () => {
-    void invoke("disable_cloud_sync");
-    const form = document.querySelector<HTMLFormElement>("#cloud-login");
-    const logout = document.querySelector<HTMLButtonElement>("#cloud-logout");
-    const status = document.querySelector<HTMLParagraphElement>("#cloud-status");
-    if (form) form.hidden = false;
-    if (logout) logout.hidden = true;
-    if (status) status.textContent = "Log in to sync Pro Ideas from anywhere.";
-  });
-  void loadPairingInfo();
+  wirePairing();
+  wireLibrary();
+  wireInspector();
+  wireSignIn();
+  wirePlayer();
+
+  // A Bridge that has never been walked through starts at the walkthrough.
+  state.screen = hasOnboarded() ? "app" : "pair";
+  render();
+
+  void bridge
+    .ideasDir()
+    .then((dir) => {
+      state.ideasDir = dir;
+      render();
+    })
+    .catch(() => undefined);
   void refreshLibrary();
-  setInterval(() => void refreshLibrary(), REFRESH_MS);
-  setInterval(() => void loadPairingInfo(), REFRESH_MS);
+  void refreshPairing();
+
+  window.setInterval(() => void refreshLibrary(), REFRESH_MS);
+  window.setInterval(() => void refreshPairing(), REFRESH_MS);
+  // The pairing countdown is the only thing that changes every second, and only
+  // while it is on screen.
+  window.setInterval(() => {
+    if (state.screen === "pair") renderPairing(state);
+  }, PAIRING_TICK_MS);
 });

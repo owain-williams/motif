@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { ideaMetadataLabels } from "./idea.js";
 import type { IdeaMetadata } from "./idea.js";
 import {
   editIdea,
   formatDuration,
+  ideaFacets,
+  ideaMatchesFacet,
   insertIdea,
+  libraryFacets,
   normalizeIdeaName,
   removeIdea,
   renameIdea,
   searchLibrary,
   setIdeaStorageState,
   sortLibrary,
+  sortLibraryByDuration,
 } from "./library.js";
 
 /**
@@ -252,5 +257,166 @@ describe("formatDuration", () => {
   it("clamps invalid or negative input to zero", () => {
     expect(formatDuration(-1_000)).toBe("0:00");
     expect(formatDuration(Number.NaN)).toBe("0:00");
+  });
+});
+
+describe("sortLibraryByDuration", () => {
+  it("orders the longest Ideas first", () => {
+    const short = idea("short", 3_000, 20_000);
+    const long = idea("long", 1_000, 180_000);
+    const middle = idea("middle", 2_000, 60_000);
+
+    expect(sortLibraryByDuration([short, long, middle])).toEqual([
+      long,
+      middle,
+      short,
+    ]);
+  });
+
+  it("keeps input order among equal-length Ideas, so a newest-first list stays newest-first within a length", () => {
+    const newer = idea("newer", 2_000, 30_000);
+    const older = idea("older", 1_000, 30_000);
+
+    expect(sortLibraryByDuration([newer, older])).toEqual([newer, older]);
+  });
+
+  it("leaves the input untouched", () => {
+    const library = [idea("a", 1_000, 10_000), idea("b", 2_000, 90_000)];
+    const before = [...library];
+
+    sortLibraryByDuration(library);
+
+    expect(library).toEqual(before);
+  });
+});
+
+describe("libraryFacets", () => {
+  it("counts every distinct metadata value across the Library", () => {
+    const first = {
+      ...idea("first", 3_000),
+      tags: ["dreamy"],
+      instrument: ["guitar"],
+      tempo: 120,
+    };
+    const second = {
+      ...idea("second", 2_000),
+      instrument: ["guitar", "vocal"],
+      style: ["ballad"],
+    };
+    const third = {
+      ...idea("third", 1_000),
+      location: { lat: 53.05, lon: -2.99, label: "Wrexham" },
+    };
+
+    // Most-used first, then alphabetically by label.
+    expect(libraryFacets([first, second, third])).toEqual([
+      { kind: "instrument", value: "guitar", label: "guitar", count: 2 },
+      { kind: "tempo", value: "120", label: "120 BPM", count: 1 },
+      { kind: "style", value: "ballad", label: "ballad", count: 1 },
+      { kind: "tags", value: "dreamy", label: "dreamy", count: 1 },
+      { kind: "instrument", value: "vocal", label: "vocal", count: 1 },
+      { kind: "location", value: "Wrexham", label: "Wrexham", count: 1 },
+    ]);
+  });
+
+  it("folds values that differ only in case into one facet, keeping the casing first seen", () => {
+    const first = { ...idea("first", 2_000), tags: ["Guitar"] };
+    const second = { ...idea("second", 1_000), tags: ["guitar"] };
+
+    expect(libraryFacets([first, second])).toEqual([
+      { kind: "tags", value: "Guitar", label: "Guitar", count: 2 },
+    ]);
+  });
+
+  it("keeps the same word in different fields as separate facets", () => {
+    const library = [{ ...idea("both", 1_000), tags: ["vocal"], instrument: ["vocal"] }];
+
+    expect(libraryFacets(library)).toEqual([
+      { kind: "instrument", value: "vocal", label: "vocal", count: 1 },
+      { kind: "tags", value: "vocal", label: "vocal", count: 1 },
+    ]);
+  });
+
+  it("falls back to a location's coordinates when it has no place label", () => {
+    const located = {
+      ...idea("located", 1_000),
+      location: { lat: 53.05, lon: -2.99, label: "" },
+    };
+
+    expect(libraryFacets([located])).toEqual([
+      { kind: "location", value: "53.050, -2.990", label: "53.050, -2.990", count: 1 },
+    ]);
+  });
+
+  it("has nothing to offer for a Library with no metadata", () => {
+    expect(libraryFacets([idea("bare", 1_000)])).toEqual([]);
+  });
+});
+
+describe("ideaMatchesFacet", () => {
+  const tagged = {
+    ...idea("tagged", 1_000),
+    tags: ["Dreamy"],
+    instrument: ["guitar"],
+    tempo: 120,
+    location: { lat: 53.05, lon: -2.99, label: "Wrexham" },
+  };
+
+  it("matches a value the Idea carries, ignoring case", () => {
+    expect(ideaMatchesFacet(tagged, "tags", "dreamy")).toBe(true);
+    expect(ideaMatchesFacet(tagged, "instrument", "GUITAR")).toBe(true);
+    expect(ideaMatchesFacet(tagged, "tempo", "120")).toBe(true);
+    expect(ideaMatchesFacet(tagged, "location", "wrexham")).toBe(true);
+  });
+
+  it("does not match a value carried by a different field", () => {
+    expect(ideaMatchesFacet(tagged, "instrument", "dreamy")).toBe(false);
+    expect(ideaMatchesFacet(tagged, "style", "guitar")).toBe(false);
+  });
+
+  it("does not match an Idea that has no value for the field", () => {
+    const bare = idea("bare", 1_000);
+
+    expect(ideaMatchesFacet(bare, "tempo", "120")).toBe(false);
+    expect(ideaMatchesFacet(bare, "location", "Wrexham")).toBe(false);
+    expect(ideaMatchesFacet(bare, "tags", "dreamy")).toBe(false);
+  });
+});
+
+describe("ideaFacets", () => {
+  it("tags each of an Idea's metadata values with the field it came from", () => {
+    const tagged = {
+      ...idea("tagged", 1_000),
+      tags: ["dreamy"],
+      instrument: ["guitar"],
+      style: ["ballad"],
+      tempo: 120,
+      location: { lat: 53.05, lon: -2.99, label: "Wrexham" },
+    };
+
+    expect(ideaFacets(tagged)).toEqual([
+      { kind: "tags", value: "dreamy", label: "dreamy" },
+      { kind: "instrument", value: "guitar", label: "guitar" },
+      { kind: "style", value: "ballad", label: "ballad" },
+      { kind: "tempo", value: "120", label: "120 BPM" },
+      { kind: "location", value: "Wrexham", label: "Wrexham" },
+    ]);
+  });
+
+  it("reads the same values, in the same order, as the label-only sibling", () => {
+    const tagged = {
+      ...idea("tagged", 1_000),
+      tags: ["dreamy"],
+      instrument: ["guitar"],
+      tempo: 120,
+    };
+
+    expect(ideaFacets(tagged).map((facet) => facet.label)).toEqual(
+      ideaMetadataLabels(tagged).map((label) => label.replace("\u{1F4CD} ", "")),
+    );
+  });
+
+  it("has nothing to list for an Idea with no metadata", () => {
+    expect(ideaFacets(idea("bare", 1_000))).toEqual([]);
   });
 });

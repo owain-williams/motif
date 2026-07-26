@@ -1,8 +1,9 @@
-import { applyIdeaEdit } from "./idea.js";
+import { applyIdeaEdit, formatLocationLabel } from "./idea.js";
 import type {
   IdeaMetadata,
   IdeaMetadataEdit,
   IdeaStorageState,
+  MultiValueIdeaField,
 } from "./idea.js";
 
 /**
@@ -84,6 +85,127 @@ export function searchLibrary<T extends IdeaMetadata>(
  */
 export function sortLibrary(ideas: readonly IdeaMetadata[]): IdeaMetadata[] {
   return [...ideas].sort((a, b) => b.capturedAt - a.capturedAt);
+}
+
+/**
+ * Returns a new array of Ideas ordered longest first — an alternative reading
+ * order for browsing, not a change to the Library itself, which stays defined as
+ * reverse-chronological (CONTEXT.md). Stable: equal-length Ideas keep their
+ * input order, so a caller that sorted by capture time first gets newest-first
+ * within each length.
+ */
+export function sortLibraryByDuration(
+  ideas: readonly IdeaMetadata[],
+): IdeaMetadata[] {
+  return [...ideas].sort((a, b) => b.durationMs - a.durationMs);
+}
+
+/**
+ * Which metadata field a {@link IdeaFacet} came from. Tags, instrument and style
+ * are the free-text multi-value fields; tempo and location are single-valued but
+ * are just as browsable, so they narrow the Library the same way.
+ */
+export type IdeaFacetKind = MultiValueIdeaField | "tempo" | "location";
+
+/** One browsable metadata value across a Library, with how many Ideas carry it. */
+export interface IdeaFacet {
+  readonly kind: IdeaFacetKind;
+  /** The underlying field value a filter matches against. */
+  readonly value: string;
+  /** How the facet reads in a list — the value, `BPM`-suffixed for a tempo. */
+  readonly label: string;
+  readonly count: number;
+}
+
+/** The values one Idea contributes to the facet list for a given kind. */
+function facetValues(idea: IdeaMetadata, kind: IdeaFacetKind): string[] {
+  if (kind === "tempo") return idea.tempo === null ? [] : [String(idea.tempo)];
+  if (kind === "location") {
+    const label = formatLocationLabel(idea.location);
+    return label === null ? [] : [label];
+  }
+  return [...idea[kind]];
+}
+
+const FACET_KINDS: readonly IdeaFacetKind[] = [
+  "tags",
+  "instrument",
+  "style",
+  "tempo",
+  "location",
+];
+
+function facetLabel(kind: IdeaFacetKind, value: string): string {
+  return kind === "tempo" ? `${value} BPM` : value;
+}
+
+/**
+ * The metadata one Idea carries, each value tagged with the field it came from
+ * — what a UI needs to colour or remove a chip per field. The label-only
+ * sibling of {@link ideaMetadataLabels}, in the same order.
+ */
+export function ideaFacets(idea: IdeaMetadata): Omit<IdeaFacet, "count">[] {
+  return FACET_KINDS.flatMap((kind) =>
+    facetValues(idea, kind).map((value) => ({
+      kind,
+      value,
+      label: facetLabel(kind, value),
+    })),
+  );
+}
+
+/**
+ * Whether an Idea carries a facet — the membership test behind filtering the
+ * Library down to one tag, instrument, style, tempo or place. Compared
+ * case-insensitively, matching how the values are deduped in
+ * {@link libraryFacets} and entered on either device.
+ */
+export function ideaMatchesFacet(
+  idea: IdeaMetadata,
+  kind: IdeaFacetKind,
+  value: string,
+): boolean {
+  const wanted = value.toLocaleLowerCase();
+  return facetValues(idea, kind).some(
+    (candidate) => candidate.toLocaleLowerCase() === wanted,
+  );
+}
+
+/**
+ * Every distinct metadata value across a Library with its Idea count — what a
+ * browse-by-metadata list is built from, the counted sibling of
+ * {@link distinctFieldValues}. Values are deduped case-insensitively per kind
+ * (first-seen casing kept) and ordered most-used first, then alphabetically, so
+ * the list stays stable as Ideas arrive.
+ */
+export function libraryFacets(library: readonly IdeaMetadata[]): IdeaFacet[] {
+  // Keyed by kind + folded value so "Guitar" and "guitar" are one facet, while
+  // a tag and an instrument that read the same stay separate rows.
+  const counted = new Map<string, { facet: IdeaFacet; count: number }>();
+  for (const idea of library) {
+    for (const kind of FACET_KINDS) {
+      for (const value of facetValues(idea, kind)) {
+        const key = `${kind}:${value.toLocaleLowerCase()}`;
+        const seen = counted.get(key);
+        if (seen) {
+          seen.count += 1;
+          continue;
+        }
+        counted.set(key, {
+          count: 1,
+          facet: { kind, value, label: facetLabel(kind, value), count: 0 },
+        });
+      }
+    }
+  }
+  return [...counted.values()]
+    .map(({ facet, count }) => ({ ...facet, count }))
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.label.localeCompare(b.label) ||
+        a.kind.localeCompare(b.kind),
+    );
 }
 
 /**

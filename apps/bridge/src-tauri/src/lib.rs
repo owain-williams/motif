@@ -327,11 +327,28 @@ fn idea_for_id(state: &BridgeState, id: &str) -> Result<IdeaMetadata, String> {
         .ok_or_else(|| "Idea not found".to_string())
 }
 
+/// Where this Bridge keeps the audio it receives — the one place the command
+/// layer spells out the directory, mirroring [`FsSink::audio_path`].
+fn ideas_dir_path(state: &BridgeState) -> PathBuf {
+    state.data_dir.join("ideas")
+}
+
 fn idea_audio_path(state: &BridgeState, idea: &IdeaMetadata) -> PathBuf {
-    state
-        .data_dir
-        .join("ideas")
-        .join(format!("{}{}", idea.id, audio_extension(idea.audio_format)))
+    ideas_dir_path(state).join(format!("{}{}", idea.id, audio_extension(idea.audio_format)))
+}
+
+/// The Capture this Bridge is paired with, or `None` before any pairing. Names
+/// the phone in the UI so the user can see which device feeds this Library.
+#[tauri::command]
+fn paired_device(state: State<'_, BridgeState>) -> Option<DeviceIdentity> {
+    state.sync.lock().ok()?.paired_peer().cloned()
+}
+
+/// The folder synced Ideas land in, so the UI can show where a received
+/// recording actually is and reveal it in the file manager.
+#[tauri::command]
+fn ideas_dir(state: State<'_, BridgeState>) -> String {
+    ideas_dir_path(&state).to_string_lossy().into_owned()
 }
 
 /// Absolute path consumed by Tauri's scoped asset protocol for in-window audio
@@ -460,6 +477,8 @@ pub fn run() {
             restore_idea,
             edit_idea,
             pairing_info,
+            paired_device,
+            ideas_dir,
             enable_cloud_sync,
             disable_cloud_sync,
             preview_audio_path,

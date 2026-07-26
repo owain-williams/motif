@@ -7,97 +7,221 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <main class="container">
-      <header class="header">
-        <h1>Motif Bridge</h1>
-        <p id="pairing" class="subtitle">starting…</p>
-      </header>
-      <section class="cloud-account" aria-labelledby="cloud-heading">
-        <div>
-          <h2 id="cloud-heading">Cloud relay</h2>
-          <p id="cloud-status">Log in to sync Pro Ideas from anywhere.</p>
+    <!-- Pairing: the first-run flow, and where "Pair another phone" comes back to. -->
+    <section id="pair" class="pair" hidden>
+      <div class="pair-copy">
+        <span class="wordmark">MOTIF BRIDGE</span>
+        <div class="pair-lede">
+          <h1 id="pair-title" class="pair-title"></h1>
+          <p id="pair-body" class="pair-body"></p>
         </div>
-        <form id="cloud-login" class="cloud-login">
-          <input id="cloud-email" type="email" autocomplete="email" placeholder="Email" required />
-          <input id="cloud-password" type="password" autocomplete="current-password" placeholder="Password" required />
-          <button type="submit">Log in</button>
-        </form>
-        <button id="cloud-logout" type="button" hidden>Log out</button>
-      </section>
-      <section class="library-section">
-        <h2 class="library-heading">Library</h2>
-        <input
-          id="library-search"
-          class="library-search"
-          type="search"
-          aria-label="Search Library"
-          placeholder="Search name, tags, instrument, style, tempo, location"
-        />
-        <p id="empty" class="empty">Waiting for an Idea to sync from your phone…</p>
-        <ul id="library" class="library"></ul>
-      </section>
-      <section id="recently-deleted-section" class="library-section" aria-labelledby="recently-deleted-heading" hidden>
-        <h2 id="recently-deleted-heading" class="library-heading">Recently Deleted</h2>
-        <p id="recently-deleted-hint" class="empty"></p>
-        <ul id="recently-deleted" class="library"></ul>
-      </section>
-      <section id="preview" class="preview" hidden>
-        <div class="preview-copy">
-          <span class="preview-label">Preview</span>
-          <strong id="preview-name"></strong>
+        <div class="pair-foot">
+          <div id="pair-dots" class="pair-dots"></div>
+          <div class="pair-actions">
+            <button id="pair-next" type="button" class="btn-primary"></button>
+            <button id="pair-skip" type="button" class="btn-quiet">Skip for now</button>
+          </div>
         </div>
-        <audio id="player" controls></audio>
-      </section>
-      <p id="handoff-status" class="handoff-status" aria-live="polite"></p>
-    </main>
+      </div>
 
-    <div id="metadata-backdrop" class="metadata-backdrop" hidden>
-      <form id="metadata-form" class="metadata-form" aria-labelledby="metadata-title">
-        <h2 id="metadata-title">Edit metadata</h2>
-        <p id="metadata-idea-name" class="metadata-idea-name"></p>
+      <div class="pair-stage">
+        <!-- Step 1 — what Bridge is: this Mac listening for the phone on the LAN. -->
+        <div id="pair-step-0" class="pair-step pair-step-intro">
+          <div class="link-diagram">
+            <div class="link-phone"><span class="link-phone-dot"></span></div>
+            <div class="link-pulse"><span></span><span></span><span></span></div>
+            <div class="link-desktop"><span>MOTIF</span></div>
+          </div>
+          <span class="mono-caption">SAME NETWORK · NO ACCOUNT NEEDED</span>
+        </div>
 
-        <label class="metadata-label" for="edit-tags">Tags</label>
-        <input id="edit-tags" class="metadata-input" type="text" placeholder="comma-separated" autocomplete="off" />
-        <div id="edit-tags-suggestions" class="metadata-suggestions"></div>
-
-        <label class="metadata-label" for="edit-instrument">Instrument</label>
-        <input id="edit-instrument" class="metadata-input" type="text" placeholder="comma-separated" autocomplete="off" />
-        <div id="edit-instrument-suggestions" class="metadata-suggestions"></div>
-
-        <label class="metadata-label" for="edit-style">Style</label>
-        <input id="edit-style" class="metadata-input" type="text" placeholder="comma-separated" autocomplete="off" />
-        <div id="edit-style-suggestions" class="metadata-suggestions"></div>
-
-        <label class="metadata-label" for="edit-tempo">Tempo (BPM)</label>
-        <input id="edit-tempo" class="metadata-input" type="number" min="1" step="1" placeholder="e.g. 120" />
-
-        <div id="edit-location-group" class="metadata-location" hidden>
-          <label class="metadata-label" for="edit-location-label">Location</label>
-          <input id="edit-location-label" class="metadata-input" type="text" placeholder="Place label" autocomplete="off" />
-          <div class="metadata-location-meta">
-            <span id="edit-location-coords" class="metadata-coords"></span>
-            <button type="button" id="edit-location-remove" class="metadata-location-remove">Remove</button>
+        <!-- Step 2 — the live pairing code, read from the Rust core. -->
+        <div id="pair-step-1" class="pair-step">
+          <div class="code-card">
+            <span class="mono-caption">ENTER ON YOUR PHONE</span>
+            <div id="code-chars" class="code-chars"></div>
+            <div class="code-timer">
+              <span id="code-pip" class="pip"></span>
+              <span id="code-timer-text" class="mono-value"></span>
+            </div>
           </div>
         </div>
 
-        <div class="metadata-actions">
-          <button type="button" id="metadata-cancel" class="metadata-cancel">Cancel</button>
-          <button type="submit" class="metadata-save">Save</button>
+        <!-- Step 3 — where received audio lands, and the optional cloud relay. -->
+        <div id="pair-step-2" class="pair-step">
+          <div class="stage-stack">
+            <div class="card">
+              <span class="mono-caption">WHERE IDEAS LAND</span>
+              <div class="path-row">
+                <svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                  <path d="M1.8 4.2h4.4l1.4 1.6h6.6v7.4H1.8z" />
+                </svg>
+                <span id="ideas-dir" class="path-value"></span>
+                <button id="ideas-dir-reveal" type="button" class="btn-chip">Reveal</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <span class="mono-caption">CLOUD RELAY</span>
+                <span class="badge">OPTIONAL</span>
+              </div>
+              <p class="card-body">
+                Sign in only if you want Ideas to arrive when your phone is off
+                your network. Pro accounts only.
+              </p>
+              <button id="pair-relay" type="button" class="btn-secondary"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bridge: the Library, its filters, and the selected Idea. -->
+    <main id="app" class="app" hidden>
+      <nav class="sidebar" aria-label="Library filters">
+        <div class="sidebar-head">
+          <span class="wordmark">MOTIF BRIDGE</span>
+          <div class="device-card">
+            <div class="device-glyph" aria-hidden="true"></div>
+            <div class="device-copy">
+              <span id="device-name" class="device-name"></span>
+              <span id="device-state" class="device-state mono-value"></span>
+            </div>
+            <span id="device-pip" class="pip"></span>
+          </div>
+        </div>
+
+        <div class="sidebar-scroll">
+          <div id="nav" class="nav-group"></div>
+          <div id="facets-group" class="nav-group">
+            <span class="group-heading">TAGS</span>
+            <div id="facets" class="nav-group"></div>
+          </div>
+        </div>
+
+        <div class="sidebar-foot">
+          <div class="relay-row">
+            <span id="relay-state" class="mono-value"></span>
+            <button id="relay-action" type="button" class="link-button"></button>
+          </div>
+          <button id="pair-another" type="button" class="link-button quiet">
+            Pair another phone
+          </button>
+        </div>
+      </nav>
+
+      <section class="library" aria-label="Library">
+        <div class="library-bar">
+          <div class="search">
+            <svg class="icon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="M10.5 10.5L14 14" />
+            </svg>
+            <input
+              id="search"
+              type="search"
+              autocomplete="off"
+              aria-label="Search Library"
+              placeholder="Search names, tags, instrument, tempo, place"
+            />
+            <button id="search-clear" type="button" class="icon-button" aria-label="Clear search" hidden>
+              <svg width="13" height="13" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+                <path d="M4 4l7 7M11 4l-7 7" />
+              </svg>
+            </button>
+          </div>
+          <button id="sort" type="button" class="btn-bar"></button>
+          <span id="count" class="mono-count"></span>
+        </div>
+
+        <div id="rows" class="rows" role="list"></div>
+
+        <div id="empty" class="empty-state" hidden>
+          <div class="empty-bars" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <span id="empty-title" class="empty-title"></span>
+          <span id="empty-body" class="empty-body"></span>
+          <button id="empty-clear" type="button" class="btn-secondary" hidden>Clear filters</button>
+        </div>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <aside class="inspector" aria-label="Selected Idea">
+        <div id="inspector-empty" class="inspector-empty">
+          <span class="inspector-empty-title">No Idea selected</span>
+          <span class="inspector-empty-body">
+            Pick one on the left to rename it, retag it, or drag its WAV into
+            your session.
+          </span>
+        </div>
+
+        <div id="inspector-body" class="inspector-body" hidden>
+          <div class="field-block">
+            <label class="mono-caption" for="name">NAME</label>
+            <input id="name" class="name-input" type="text" autocomplete="off" />
+            <span id="meta" class="mono-value dim"></span>
+          </div>
+
+          <div class="player-card">
+            <div id="wave" class="wave-large" aria-hidden="true"></div>
+            <div class="transport">
+              <button id="play" type="button" class="play-button" aria-label="Play"></button>
+              <span id="clock" class="mono-value"></span>
+              <span id="format" class="mono-value dim"></span>
+            </div>
+          </div>
+
+          <div class="field-block">
+            <span class="mono-caption">TAGS</span>
+            <div id="chips" class="chip-row"></div>
+            <div id="composer" class="composer" hidden>
+              <div id="composer-kinds" class="segmented" role="group" aria-label="Field to add to"></div>
+              <input id="composer-input" class="composer-input" type="text" autocomplete="off" />
+              <div id="composer-suggestions" class="chip-row"></div>
+            </div>
+          </div>
+
+          <dl id="fields" class="detail-list"></dl>
+
+          <div class="inspector-actions">
+            <button id="drag" type="button" class="btn-drag">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M8 2v8M4.6 6.8L8 10.2l3.4-3.4M2.6 13.4h10.8" />
+              </svg>
+              <span id="drag-label">Drag WAV out</span>
+            </button>
+            <div class="action-pair">
+              <button id="reveal" type="button" class="btn-secondary">Reveal in Finder</button>
+              <button id="delete" type="button" class="btn-danger">Delete</button>
+            </div>
+            <p id="delete-note" class="delete-note" hidden></p>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="signin-backdrop" class="backdrop" hidden>
+      <form id="signin-form" class="dialog" aria-labelledby="signin-title">
+        <h2 id="signin-title" class="dialog-title">Cloud relay</h2>
+        <p class="dialog-body">
+          Sign in to your Pro account and Ideas reach this Bridge even when your
+          phone is off the network.
+        </p>
+        <label class="mono-caption" for="signin-email">EMAIL</label>
+        <input id="signin-email" class="dialog-input" type="email" autocomplete="email" required />
+        <label class="mono-caption" for="signin-password">PASSWORD</label>
+        <input id="signin-password" class="dialog-input" type="password" autocomplete="current-password" required />
+        <p id="signin-error" class="dialog-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="signin-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button id="signin-submit" type="submit" class="btn-primary">Sign in</button>
         </div>
       </form>
     </div>
 
-    <div id="delete-backdrop" class="metadata-backdrop" hidden>
-      <form id="delete-form" class="metadata-form" aria-labelledby="delete-title">
-        <h2 id="delete-title">Delete Idea?</h2>
-        <p id="delete-message" class="metadata-idea-name"></p>
-        <div class="metadata-actions">
-          <button type="button" id="delete-cancel" class="metadata-cancel">Cancel</button>
-          <button type="submit" class="delete-confirm">Delete</button>
-        </div>
-      </form>
-    </div>
-
+    <audio id="player" hidden></audio>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
