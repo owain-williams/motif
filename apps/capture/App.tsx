@@ -26,7 +26,6 @@ import {
   markIdeaDeleted,
   markIdeaRestored,
   mergeDeletions,
-  mergeIdea,
   normalizeIdeaName,
   recentlyDeletedIdeas,
   RECENTLY_DELETED_RETENTION_DAYS,
@@ -52,6 +51,7 @@ import {
 import { planIdeaShare } from "./src/core/idea-share";
 import { purgeExpiredIdeas } from "./src/core/idea-purge";
 import {
+  applyMergedMetadata,
   ideaStorageAction,
   isPaired,
   pairWithBridge,
@@ -609,24 +609,40 @@ export default function App() {
 
   // Applies a reconciled Library from a metadata sync onto the *current* state,
   // re-merging per Idea so a concurrent local edit or a just-captured Idea is
-  // never lost. Persists only when something actually changed.
-  const applyMergedMetadata = useCallback((merged: readonly IdeaMetadata[]) => {
-    const current = libraryRef.current;
-    const mergedById = new Map(merged.map((idea) => [idea.id, idea]));
-    let changed = false;
-    const next = current.map((idea) => {
-      const peer = mergedById.get(idea.id);
-      if (!peer) return idea;
-      const remerged = mergeIdea(idea, peer);
-      if (sameEditableMetadata(remerged, idea)) return idea;
-      changed = true;
-      return remerged;
-    });
+  // never lost. Persists only when something actually changed. The headless job
+  // lands its passes through the same policy, against durable state.
+  const landMergedMetadata = useCallback((merged: readonly IdeaMetadata[]) => {
+    const { library: next, changed } = applyMergedMetadata(
+      libraryRef.current,
+      merged,
+    );
     if (!changed) return;
     libraryRef.current = next;
     saveLibrary(next);
     setLibrary(next);
   }, []);
+
+  // The headless job writes the Library and the delete records too, and it runs
+  // while this component sits in memory still holding both as they were. Reading
+  // them again on return merges what the job persisted back into the live state,
+  // so the next thing Capture saves doesn't overwrite an edit or a delete that
+  // arrived from Bridge while the app was in the background (motif-kka.10).
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      loadLibrary()
+        .then(landMergedMetadata)
+        .catch(() => {
+          // A manifest that won't load leaves the in-memory Library in charge
+          // rather than emptying it; the next sync pass brings the edits back.
+        });
+      // Delete records merge by union, so a failed read costs nothing either.
+      loadDeletions()
+        .then(applyDeletions)
+        .catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [landMergedMetadata, applyDeletions]);
 
   // Runs every path the tier allows. LAN remains preferred and independent:
   // a local failure never prevents a paid account from reaching cloud relay.
@@ -661,7 +677,7 @@ export default function App() {
         );
         // Metadata sync is bidirectional (ADR 0006): pull Bridge's edits, push
         // ours. Kept separate from the audio offer path so it stays copy-safe.
-        applyMergedMetadata(
+        landMergedMetadata(
           await syncMetadataWithBridge({
             endpoint: inputs.bridge.endpoint,
             capture: inputs.capture,
@@ -710,7 +726,7 @@ export default function App() {
         // the live Library rather than this pass's snapshot, so an edit Bridge
         // just handed us over the LAN reaches the account's other devices now
         // instead of on the next pass.
-        applyMergedMetadata(
+        landMergedMetadata(
           await syncMetadataWithCloud({
             idToken: inputs.idToken,
             capture: inputs.capture,
@@ -725,7 +741,7 @@ export default function App() {
     setIsSyncing(false);
     setSyncStatus(statuses.join(" · ") || null);
     },
-    [applyMergedMetadata, applyDeletions, rememberDelivered, accountRefresher],
+    [landMergedMetadata, applyDeletions, rememberDelivered, accountRefresher],
   );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.

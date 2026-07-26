@@ -149,3 +149,42 @@ export function reconcileMetadata(
   }
   return { merged, toPush };
 }
+
+/** The outcome of landing a finished sync pass on the Library it started from. */
+export interface MetadataApplication {
+  /** The Library to hold (and persist); unchanged from `current` unless flagged. */
+  readonly library: IdeaMetadata[];
+  /** Whether the pass actually brought anything new; `false` means don't write. */
+  readonly changed: boolean;
+}
+
+/**
+ * Lands the result of {@link reconcileMetadata} on the Library as it stands
+ * *now*, which may have moved on while the pass was in flight — a foreground
+ * edit, a fresh capture, a purge. Every shared Idea is merged again by per-field
+ * last-write-wins rather than overwritten, so a local edit made mid-pass wins on
+ * its field and the peer's edits still land on the others. `current` decides
+ * membership: an Idea it no longer holds is never resurrected from the pass's
+ * older snapshot, and one it gained is carried through untouched.
+ *
+ * This is what makes a metadata pass safe to run from a headless background job
+ * (motif-kka.10) and from the foreground at the same time. Pure: neither input
+ * is mutated.
+ */
+export function applyMergedMetadata(
+  current: readonly IdeaMetadata[],
+  merged: readonly IdeaMetadata[],
+): MetadataApplication {
+  const mergedById = new Map(merged.map((idea) => [idea.id, idea]));
+  let changed = false;
+  const library = current.map((idea) => {
+    const peer = mergedById.get(idea.id);
+    if (!peer) return idea;
+    const remerged = mergeIdea(idea, peer);
+    if (sameEditableMetadata(remerged, idea)) return idea;
+    changed = true;
+    return remerged;
+  });
+  return { library: changed ? library : [...current], changed };
+}
+

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { IdeaMetadata } from "@motif/shared";
 import { markIdeaDeleted, markIdeaRestored } from "@motif/shared";
 import {
+  applyMergedMetadata,
   ideaStorageAction,
   ideasToOffer,
   isPaired,
@@ -231,5 +232,93 @@ describe("reconcileMetadata — bidirectional metadata sync", () => {
     const snapshot = structuredClone(local);
     reconcileMetadata([local], [remote]);
     expect(local).toEqual(snapshot);
+  });
+});
+
+describe("applyMergedMetadata — landing a sync pass on a Library that moved on", () => {
+  const stamps = (over: Partial<IdeaMetadata["fieldUpdatedAt"]>) => ({
+    name: 0,
+    tags: 0,
+    instrument: 0,
+    style: 0,
+    tempo: 0,
+    location: 0,
+    ...over,
+  });
+
+  it("lands a peer's edit on the current Library", () => {
+    const before = idea("a", 1, { tags: ["mine"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const merged = idea("a", 1, { tags: ["theirs"], fieldUpdatedAt: stamps({ tags: 200 }) });
+    const { library, changed } = applyMergedMetadata([before], [merged]);
+    expect(library[0].tags).toEqual(["theirs"]);
+    expect(changed).toBe(true);
+  });
+
+  it("keeps an edit made locally while the pass was in flight", () => {
+    const edited = idea("a", 1, {
+      tags: ["just-typed"],
+      fieldUpdatedAt: stamps({ tags: 500 }),
+    });
+    // The pass started before that edit, so its merged copy carries the old tag.
+    const merged = idea("a", 1, { tags: ["theirs"], fieldUpdatedAt: stamps({ tags: 200 }) });
+    const { library } = applyMergedMetadata([edited], [merged]);
+    expect(library[0].tags).toEqual(["just-typed"]);
+  });
+
+  it("merges per field, so each side's newest edit survives", () => {
+    const edited = idea("a", 1, {
+      tags: ["just-typed"],
+      fieldUpdatedAt: stamps({ tags: 500, style: 10 }),
+    });
+    const merged = idea("a", 1, {
+      tags: ["theirs"],
+      style: ["ambient"],
+      fieldUpdatedAt: stamps({ tags: 200, style: 300 }),
+    });
+    const { library } = applyMergedMetadata([edited], [merged]);
+    expect(library[0].tags).toEqual(["just-typed"]);
+    expect(library[0].style).toEqual(["ambient"]);
+  });
+
+  it("reports no change when the pass brought nothing new, so no rewrite is needed", () => {
+    const held = idea("a", 1, { tags: ["same"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const { library, changed } = applyMergedMetadata([held], [{ ...held }]);
+    expect(changed).toBe(false);
+    expect(library).toEqual([held]);
+  });
+
+  it("keeps an Idea captured after the pass started", () => {
+    const held = idea("a", 1, { fieldUpdatedAt: stamps({ tags: 100 }) });
+    const fresh = idea("captured-since", 2);
+    const { library, changed } = applyMergedMetadata([held, fresh], [held]);
+    expect(library.map((i) => i.id)).toEqual(["a", "captured-since"]);
+    expect(changed).toBe(false);
+  });
+
+  it("never resurrects an Idea the Library no longer holds", () => {
+    const held = idea("a", 1);
+    const purgedDuringThePass = idea("gone", 1);
+    const { library } = applyMergedMetadata([held], [held, purgedDuringThePass]);
+    expect(library.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("leaves storage state to the device, so a merge never moves audio", () => {
+    const offloaded = idea("a", 1, { storageState: "offloaded" });
+    const merged = idea("a", 1, {
+      storageState: "on-device",
+      tags: ["theirs"],
+      fieldUpdatedAt: stamps({ tags: 200 }),
+    });
+    const { library } = applyMergedMetadata([offloaded], [merged]);
+    expect(library[0].storageState).toBe("offloaded");
+    expect(library[0].tags).toEqual(["theirs"]);
+  });
+
+  it("does not mutate the current Library", () => {
+    const held = idea("a", 1, { tags: ["mine"], fieldUpdatedAt: stamps({ tags: 100 }) });
+    const merged = idea("a", 1, { tags: ["theirs"], fieldUpdatedAt: stamps({ tags: 200 }) });
+    const snapshot = structuredClone(held);
+    applyMergedMetadata([held], [merged]);
+    expect(held).toEqual(snapshot);
   });
 });

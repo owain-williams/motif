@@ -9,10 +9,17 @@ import {
   loadLibrary,
   readIdeaAudioBytes,
   saveDeletions,
+  saveLibrary,
 } from "./idea-storage";
-import { syncPendingCloudIdeas, syncPendingIdeas } from "./idea-sync";
+import {
+  syncMetadataWithBridge,
+  syncMetadataWithCloud,
+  syncPendingCloudIdeas,
+  syncPendingIdeas,
+} from "./idea-sync";
 import { loadSyncState } from "./sync-storage";
 import {
+  createMetadataCommit,
   runBackgroundSyncJob,
   type BackgroundSyncTransport,
 } from "./core/background-sync";
@@ -34,6 +41,19 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
     ]);
     const readAudio = (idea: IdeaMetadata) =>
       readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
+    // Both transports write the Library back, so they share one serialized
+    // committer that re-merges against durable state (motif-kka.10).
+    const commitMetadata = createMetadataCommit({
+      load: loadLibrary,
+      save: saveLibrary,
+    });
+    // A metadata pass reads the Library as it stands rather than the job's
+    // opening snapshot — the foreground does the same with its live one — so an
+    // edit the other transport has just committed goes out on this run instead
+    // of waiting for the next.
+    const syncMetadata = async (
+      pass: (library: readonly IdeaMetadata[]) => Promise<IdeaMetadata[]>,
+    ) => commitMetadata(await pass(await loadLibrary()));
     const transports: BackgroundSyncTransport[] = [];
 
     const bridge = syncState.pairedBridge;
@@ -49,6 +69,15 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
           readAudio,
         });
         saveDeletions(result.deletions);
+        // Metadata is bidirectional too (ADR 0006): without this pass, a tag
+        // typed on Bridge would wait for someone to open Capture.
+        await syncMetadata((current) =>
+          syncMetadataWithBridge({
+            endpoint: bridge.endpoint,
+            capture: syncState.capture,
+            library: current,
+          }),
+        );
       });
     }
 
@@ -67,6 +96,15 @@ async function syncPersistedPendingIdeas(): Promise<BackgroundTask.BackgroundTas
           deletions,
           readAudio,
         });
+        // The relay is the only path between devices that never share a LAN, so
+        // a headless run has to reconcile metadata here as well.
+        await syncMetadata((current) =>
+          syncMetadataWithCloud({
+            idToken,
+            capture: syncState.capture,
+            library: current,
+          }),
+        );
       });
     }
 
