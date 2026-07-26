@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AppState, StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as Sharing from "expo-sharing";
@@ -43,7 +43,6 @@ import type {
   IdeaMetadata,
   IdeaMetadataEdit,
   PairingRequest,
-  Tier,
 } from "@motif/shared";
 import {
   beginRecording,
@@ -154,6 +153,7 @@ import {
   effectiveTier as effectiveAccountTier,
 } from "./src/core/account-session";
 import type { AccountSession } from "./src/core/account-session";
+import { createAccountRefresher } from "./src/core/account-refresh";
 import { AccountDialog } from "./src/components/AccountDialog";
 import {
   billingIsAvailable,
@@ -213,17 +213,16 @@ const TOAST_MS = 2600;
  */
 const DIALOG_DISMISS_MS = 400;
 
-/** Everything a sync pass needs: the paired Bridge, who we are, what we have. */
+/**
+ * Everything a sync pass needs: the paired Bridge, who we are, what we have.
+ * Deliberately no Tier — a pass re-reads the account's own before it decides
+ * which transports are open, so a Tier that moved server-side while this was
+ * queued is honoured by the pass rather than the one after it.
+ */
 interface SyncInputs {
   readonly bridge: PairedBridge | null;
   readonly capture: DeviceIdentity;
   readonly library: IdeaMetadata[];
-  /**
-   * The account's own Tier, never a Tier unlocked locally from a store
-   * entitlement: the relay authorizes server-side, so anything else here just
-   * buys a 403.
-   */
-  readonly cloudTier: Tier;
   readonly idToken: string | null;
 }
 
@@ -292,6 +291,33 @@ export default function App() {
   const [now, setNow] = useState(() => Date.now());
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authTokensRef = useRef<AuthTokens | null>(null);
+  // The session as it stands, for work that outlives the render that began it:
+  // a Tier read in flight is judged against the account signed in when the
+  // answer lands, not the one on screen when it was asked for.
+  const accountRef = useRef(account);
+  useEffect(() => {
+    accountRef.current = account;
+  }, [account]);
+  // Only verified billing moves a Tier, and most of the ways it moves — a
+  // renewal, an expiry, a refund, Pro bought on another device — involve this
+  // device not at all. This re-reads it on return to the foreground and before
+  // anything the backend authorizes, so those changes land without a logout or
+  // a restart.
+  const accountRefresher = useMemo(
+    () =>
+      createAccountRefresher({
+        currentAccount: () => accountRef.current,
+        loadProfile: async () => {
+          const idToken = authTokensRef.current?.idToken;
+          if (!idToken) throw new Error("There is no account session to refresh.");
+          return loadAccount(idToken);
+        },
+        // Reached only when the Tier actually moved, so a refresh that finds
+        // nothing new doesn't re-arm the sync timer or re-render the Library.
+        onRefreshed: setAccount,
+      }),
+    [],
+  );
   // Set when the user chooses Pro while signed out: the purchase resumes once
   // the login it detoured through succeeds.
   const [resumeUpgrade, setResumeUpgrade] = useState(false);
@@ -473,23 +499,34 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [showAccount, resumeUpgrade, account.kind]);
 
+  // Coming back to the app is when a Tier change made elsewhere is most likely
+  // to be waiting, and the moment the user looks at what their account can do.
+  // A refresh that fails is silent: Capture stays on the Tier it last saw
+  // rather than dropping a paying account to Free because the network blinked.
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") void accountRefresher.refresh("foreground");
+    });
+    return () => subscription.remove();
+  }, [accountRefresher]);
+
+  // The Sync screen is where the paid recording choices are made and where the
+  // relay's state is read, so it opens on a Tier no older than the foreground
+  // window allows rather than on whatever this device last happened to see.
+  useEffect(() => {
+    if (!showSync) return;
+    void accountRefresher.refresh("foreground");
+  }, [showSync, accountRefresher]);
+
   // Re-read the Tier whenever the Account dialog opens, so a webhook that landed
   // after Capture gave up polling is picked up without restarting the app.
+  // Opening the dialog is a deliberate look at the subscription, so it asks
+  // again rather than settling for however fresh the last answer was.
   useEffect(() => {
     if (!showAccount) return;
-    const idToken = authTokensRef.current?.idToken;
-    if (!idToken) return;
-    let active = true;
-    loadAccount(idToken)
-      .then((profile) => {
-        if (active) setAccount(authenticatedAccount(profile));
-      })
-      // Offline: keep showing the last known Tier rather than dropping to Free.
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [showAccount]);
+    accountRefresher.invalidate();
+    void accountRefresher.refresh("foreground");
+  }, [showAccount, accountRefresher]);
 
   // Restore login when possible. A missing/expired account session is soft:
   // Capture remains fully available with anonymous Free-tier behavior.
@@ -595,13 +632,15 @@ export default function App() {
   // a local failure never prevents a paid account from reaching cloud relay.
   const runSync = useCallback(
     async (inputs: SyncInputs) => {
-    const transports = syncTransports(inputs.cloudTier, inputs.bridge !== null);
     const readAudio = (idea: IdeaMetadata) =>
       readIdeaAudioBytes(idea.id, audioExtension(idea.audioFormat));
     const statuses: string[] = [];
     setIsSyncing(true);
 
-    if (transports.includes("local-network") && inputs.bridge) {
+    // The local path is open to every tier and needs no account at all, so it
+    // runs before the Tier is read rather than behind it: a Bridge on this LAN
+    // must not wait on a backend the network may have no route to.
+    if (inputs.bridge) {
       try {
         // The pass exchanges delete records before offering audio, so a delete
         // made on either device while the other was offline lands first.
@@ -634,6 +673,17 @@ export default function App() {
         statuses.push(`${inputs.bridge.displayName} offline`);
       }
     }
+
+    // Whether the relay is open is the account Tier's to say, and it is read
+    // afresh rather than taken from the pass's inputs: a subscription that
+    // lapsed, or one that just started, decides this pass rather than the one
+    // after it. A read that fails leaves the last known Tier in charge, so a
+    // paid account keeps relaying through a blip and the backend goes on
+    // refusing anything it shouldn't have.
+    const cloudTier = effectiveAccountTier(
+      await accountRefresher.refresh("gated-work"),
+    );
+    const transports = syncTransports(cloudTier, inputs.bridge !== null);
 
     if (transports.includes("cloud-relay") && inputs.idToken) {
       try {
@@ -675,7 +725,7 @@ export default function App() {
     setIsSyncing(false);
     setSyncStatus(statuses.join(" · ") || null);
     },
-    [applyMergedMetadata, applyDeletions, rememberDelivered],
+    [applyMergedMetadata, applyDeletions, rememberDelivered, accountRefresher],
   );
 
   // Keep the timer's inputs current without re-arming it on every keystroke.
@@ -685,11 +735,10 @@ export default function App() {
           bridge: syncState.pairedBridge,
           capture: captureIdentity,
           library,
-          cloudTier,
           idToken: authTokensRef.current?.idToken ?? null,
         }
       : null;
-  }, [syncState.pairedBridge, captureIdentity, library, cloudTier, account]);
+  }, [syncState.pairedBridge, captureIdentity, library, account]);
 
   // Keep the OS-scheduled headless job enabled whenever a persisted sync path
   // exists. It supplements this foreground timer; the OS decides the actual
@@ -800,7 +849,6 @@ export default function App() {
         bridge: syncState.pairedBridge,
         capture: captureIdentity,
         library: next,
-        cloudTier,
         idToken: authTokensRef.current?.idToken ?? null,
       }).then(() => {
         // Only claim it landed once a peer has actually said so.
@@ -925,6 +973,23 @@ export default function App() {
 
     setStorageBusyId(idea.id);
     try {
+      // Cloud storage is authorized server-side, so the account's Tier now
+      // decides this — not the one the Library row was drawn from. Which action
+      // it is follows the Idea's storage state, so a refreshed Tier can only
+      // withdraw it. A refresh that can't reach the backend leaves the last
+      // known Tier in charge and the request goes ahead; the backend refuses it
+      // if the account no longer qualifies.
+      const authorizedTier = effectiveAccountTier(
+        await accountRefresher.refresh("gated-work"),
+      );
+      if (!ideaStorageAction(authorizedTier, idea)) {
+        Alert.alert(
+          PRO_DISPLAY_NAME,
+          `Cloud storage needs ${PRO_DISPLAY_NAME}. This Idea stays on your device.`,
+        );
+        return;
+      }
+
       if (action === "offload") {
         const audio = await readIdeaAudioBytes(
           idea.id,
@@ -1052,7 +1117,6 @@ export default function App() {
         bridge,
         capture: captureIdentity,
         library,
-        cloudTier,
         idToken: authTokensRef.current?.idToken ?? null,
       });
     } catch {
@@ -1099,6 +1163,8 @@ export default function App() {
     const profile = await loadAccount(tokens.idToken);
     await saveAuthTokens(tokens);
     authTokensRef.current = tokens;
+    // Nothing learned about the last account says anything about this one.
+    accountRefresher.invalidate();
     setAccount(authenticatedAccount(profile));
     setEntitlement(await identifyBillingAccount(profile.sub));
     setShowAccount(false);
@@ -1117,6 +1183,7 @@ export default function App() {
     await clearAuthTokens();
     authTokensRef.current = null;
     setResumeUpgrade(false);
+    accountRefresher.invalidate();
     setAccount(ANONYMOUS_ACCOUNT);
     // Return the store customer to anonymous too, so the next account signed in
     // on this device doesn't inherit these entitlements.
@@ -1140,6 +1207,10 @@ export default function App() {
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     });
 
+    // This poll has read the account later than any refresh still in flight, so
+    // its answer supersedes them — including one that started before the
+    // webhook landed and would otherwise put the Tier back to Free.
+    accountRefresher.invalidate();
     if (!projection.settled) return;
     setAccount((current) =>
       current.kind === "authenticated"
